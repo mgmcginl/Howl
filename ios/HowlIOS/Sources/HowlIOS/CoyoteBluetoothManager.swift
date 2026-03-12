@@ -100,11 +100,11 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         }
     }
 
-    func updateDesiredLimits(limitA: Int, limitB: Int) {
+    func updateDesiredLimits(limitA: Int, limitB: Int, shouldTransmit: Bool = true) {
         desiredLimitA = limitA
         desiredLimitB = limitB
 
-        guard isReady else { return }
+        guard shouldTransmit, isReady else { return }
         sendParameters(markAsInitialSync: false)
     }
 

@@ -1155,7 +1155,20 @@ final class AppModel: ObservableObject {
     }
 
     private func syncBleLimits() {
-        bleManager.updateDesiredLimits(limitA: powerA, limitB: powerB)
+        let shouldDeferParameterWrite =
+            outputMode == .coyote3Live
+            && isPlaying
+            && loadedSource != nil
+
+        bleManager.updateDesiredLimits(
+            limitA: powerA,
+            limitB: powerB,
+            shouldTransmit: !shouldDeferParameterWrite
+        )
+
+        if shouldDeferParameterWrite {
+            sendImmediateLivePowerUpdate()
+        }
     }
 
     private func reloadCurrentHWLIfNeeded() {
@@ -1213,6 +1226,30 @@ final class AppModel: ObservableObject {
             if outputMode == .coyote3Live {
                 bleManager.sendLivePacket(packet)
             }
+        }
+    }
+
+    private func sendImmediateLivePowerUpdate() {
+        guard outputMode == .coyote3Live else { return }
+        guard isPlaying, let source = loadedSource else { return }
+        guard let pulses = buildCoyoteBatch(source: source, at: position) else { return }
+
+        do {
+            let packet = try Coyote3Protocol.pulsePacket(
+                pulses: pulses,
+                powerA: powerA,
+                powerB: powerB,
+                minFrequency: minFrequency,
+                maxFrequency: maxFrequency,
+                previousPowerA: previousPowerA,
+                previousPowerB: previousPowerB
+            )
+            bleManager.stage(packet)
+            bleManager.sendLivePacket(packet)
+            previousPowerA = powerA
+            previousPowerB = powerB
+        } catch {
+            lastError = error.localizedDescription
         }
     }
 
