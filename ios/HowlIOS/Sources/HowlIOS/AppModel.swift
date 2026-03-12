@@ -17,7 +17,7 @@ final class AppModel: ObservableObject {
         let ext: String
     }
 
-    struct LibraryEntry: Identifiable, Equatable {
+    struct LibraryEntry: Identifiable, Equatable, Sendable {
         let url: URL
         let displayName: String
         let relativePath: String
@@ -75,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published var libraryFolderName = "No library folder selected"
     @Published var libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
     @Published var libraryEntries: [LibraryEntry] = []
+    @Published var isRefreshingLibrary = false
     @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
@@ -92,6 +93,7 @@ final class AppModel: ObservableObject {
     private var playbackTickIndex = 0
     private var libraryFolderURL: URL?
     private var libraryFolderAccessIsActive = false
+    private var libraryRefreshTask: Task<Void, Never>?
 
     init() {
         syncBleLimits()
@@ -148,6 +150,7 @@ final class AppModel: ObservableObject {
             libraryFolderURL = url
             libraryFolderAccessIsActive = didStartAccess
             libraryFolderName = url.lastPathComponent
+            libraryStatusMessage = "Indexing \(url.lastPathComponent)..."
             loadFavoritesForCurrentLibrary()
             refreshLibrary()
         } catch {
@@ -161,24 +164,48 @@ final class AppModel: ObservableObject {
 
     func refreshLibrary() {
         guard let libraryFolderURL else {
+            libraryRefreshTask?.cancel()
+            isRefreshingLibrary = false
             libraryEntries = []
             libraryFolderName = "No library folder selected"
             libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
             return
         }
 
-        do {
-            lastError = nil
-            let entries = try loadLibraryEntries(from: libraryFolderURL)
-            libraryEntries = entries.sorted {
-                $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+        libraryRefreshTask?.cancel()
+        isRefreshingLibrary = true
+        lastError = nil
+        let folderURL = libraryFolderURL
+        let folderName = libraryFolderURL.lastPathComponent
+        libraryStatusMessage = "Indexing \(folderName)..."
+
+        libraryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isRefreshingLibrary = false
             }
-            libraryFolderName = libraryFolderURL.lastPathComponent
-            libraryStatusMessage = "Indexed \(entries.count) supported files."
-        } catch {
-            lastError = error.localizedDescription
-            libraryEntries = []
-            libraryStatusMessage = "Could not read \(libraryFolderURL.lastPathComponent)."
+
+            do {
+                let entries = try await Task.detached(priority: .userInitiated) {
+                    try Self.loadLibraryEntries(from: folderURL)
+                }.value
+
+                guard !Task.isCancelled else { return }
+
+                self.libraryEntries = entries.sorted {
+                    $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+                }
+                self.libraryFolderName = folderName
+                self.libraryStatusMessage = entries.isEmpty
+                    ? "No supported files found in \(folderName)."
+                    : "Indexed \(entries.count) supported files."
+            } catch is CancellationError {
+                return
+            } catch {
+                self.lastError = error.localizedDescription
+                self.libraryEntries = []
+                self.libraryStatusMessage = "Could not read \(folderName)."
+            }
         }
     }
 
@@ -334,38 +361,68 @@ final class AppModel: ObservableObject {
         libraryFolderAccessIsActive = false
     }
 
-    private func loadLibraryEntries(from folderURL: URL) throws -> [LibraryEntry] {
-        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .isDirectoryKey]
-        guard let enumerator = FileManager.default.enumerator(
-            at: folderURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else {
-            return []
+    nonisolated private static func loadLibraryEntries(from folderURL: URL) throws -> [LibraryEntry] {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinatedEntries: [LibraryEntry] = []
+        var coordinationError: NSError?
+        var scanError: Error?
+
+        coordinator.coordinate(readingItemAt: folderURL, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                coordinatedEntries = try scanLibraryDirectory(at: coordinatedURL, baseURL: coordinatedURL)
+            } catch {
+                scanError = error
+            }
         }
 
+        if let coordinationError {
+            throw coordinationError
+        }
+
+        if let scanError {
+            throw scanError
+        }
+
+        return coordinatedEntries
+    }
+
+    nonisolated private static func scanLibraryDirectory(at directoryURL: URL, baseURL: URL) throws -> [LibraryEntry] {
+        let resourceKeys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isDirectoryKey,
+            .contentModificationDateKey
+        ]
+
+        let childURLs = try FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        )
+
         var entries: [LibraryEntry] = []
-        let basePath = folderURL.path.hasSuffix("/") ? folderURL.path : folderURL.path + "/"
 
-        for case let fileURL as URL in enumerator {
-            let ext = fileURL.pathExtension.lowercased()
-            guard LibraryDefaults.supportedExtensions.contains(ext) else { continue }
+        for childURL in childURLs {
+            let values = try childURL.resourceValues(forKeys: resourceKeys)
 
-            let values = try fileURL.resourceValues(forKeys: Set(keys))
+            if values.isDirectory == true {
+                entries.append(contentsOf: try scanLibraryDirectory(at: childURL, baseURL: baseURL))
+                continue
+            }
+
             guard values.isRegularFile == true else { continue }
 
-            let fullPath = fileURL.path
-            let relativePath: String
-            if fullPath.hasPrefix(basePath) {
-                relativePath = String(fullPath.dropFirst(basePath.count))
-            } else {
-                relativePath = fileURL.lastPathComponent
-            }
+            let ext = childURL.pathExtension.lowercased()
+            guard LibraryDefaults.supportedExtensions.contains(ext) else { continue }
+
+            let relativePath = childURL.path.replacingOccurrences(
+                of: baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/",
+                with: ""
+            )
 
             entries.append(
                 LibraryEntry(
-                    url: fileURL,
-                    displayName: fileURL.lastPathComponent,
+                    url: childURL,
+                    displayName: childURL.lastPathComponent,
                     relativePath: relativePath,
                     modifiedAt: values.contentModificationDate
                 )

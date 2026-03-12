@@ -74,6 +74,15 @@ private struct LibraryView: View {
                         Text(model.libraryStatusMessage)
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                        if model.isRefreshingLibrary {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        if let error = model.lastError {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
                     }
 
                     Button("Choose OneDrive Folder") {
@@ -86,6 +95,7 @@ private struct LibraryView: View {
                             model.refreshLibrary()
                         }
                         .buttonStyle(.bordered)
+                        .disabled(model.isRefreshingLibrary)
                     }
                 }
 
