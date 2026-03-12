@@ -23,6 +23,8 @@ xcodegen generate
 open HowlIOS.xcodeproj
 ```
 
+For the first real device session, use [HARDWARE_TEST.md](C:/Users/MarkMcGinley/w-claude-session-43/w-claude-iphone-version/ios/HARDWARE_TEST.md).
+
 ## Current MVP scope
 
 - Load `.hwl`, `.funscript`, and `.json` funscript files from Files.
