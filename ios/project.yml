@@ -21,6 +21,7 @@ targets:
       properties:
         CFBundleDisplayName: Howl
         CFBundleIconName: AppIcon
+        ITSAppUsesNonExemptEncryption: false
         CFBundleDocumentTypes:
           - CFBundleTypeName: Howl HWL Script
             CFBundleTypeRole: Viewer
