@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct ContentView: View {
@@ -125,15 +126,14 @@ private struct LibraryView: View {
             }
             .navigationTitle("Library")
             .searchable(text: $searchText, prompt: "Search files")
-            .fileImporter(
-                isPresented: $showFolderPicker,
-                allowedContentTypes: [.folder]
-            ) { result in
-                switch result {
-                case .success(let url):
-                    model.chooseLibraryFolder(from: url)
-                case .failure(let error):
-                    model.lastError = error.localizedDescription
+            .sheet(isPresented: $showFolderPicker) {
+                FolderPickerSheet { result in
+                    switch result {
+                    case .success(let url):
+                        model.chooseLibraryFolder(from: url)
+                    case .failure(let error):
+                        model.lastError = error.localizedDescription
+                    }
                 }
             }
         }
@@ -141,6 +141,62 @@ private struct LibraryView: View {
 
     private func librarySort(lhs: AppModel.LibraryEntry, rhs: AppModel.LibraryEntry) -> Bool {
         lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+    }
+}
+
+private struct FolderPickerSheet: UIViewControllerRepresentable {
+    let onComplete: (Result<URL, Error>) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.folder],
+            asCopy: false
+        )
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onComplete: (Result<URL, Error>) -> Void
+
+        init(onComplete: @escaping (Result<URL, Error>) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else {
+                onComplete(.failure(FolderPickerError.noFolderSelected))
+                return
+            }
+
+            onComplete(.success(url))
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onComplete(.failure(FolderPickerError.cancelled))
+        }
+    }
+
+    private enum FolderPickerError: LocalizedError {
+        case noFolderSelected
+        case cancelled
+
+        var errorDescription: String? {
+            switch self {
+            case .noFolderSelected:
+                return "No folder was selected."
+            case .cancelled:
+                return nil
+            }
+        }
     }
 }
 
