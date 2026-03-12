@@ -20,6 +20,7 @@ targets:
       - path: HowlIOS/Resources
     dependencies:
       - sdk: CoreBluetooth.framework
+      - sdk: AVFoundation.framework
       - package: ZIPFoundation
     info:
       path: HowlIOS/Info.plist

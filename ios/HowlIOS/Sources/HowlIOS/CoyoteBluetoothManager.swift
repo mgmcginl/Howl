@@ -34,6 +34,16 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     @Published var sentPulsePacketCount = 0
     @Published var queuedPulsePacketCount = 0
     @Published var notifyFrameCount = 0
+    @Published var requestedPowerA = 20
+    @Published var requestedPowerB = 20
+    @Published var requestedPowerChangedAt: Date?
+    @Published var lastPulsePowerA: Int?
+    @Published var lastPulsePowerB: Int?
+    @Published var lastPulsePowerSentAt: Date?
+    @Published var lastParameterLimitA: Int?
+    @Published var lastParameterLimitB: Int?
+    @Published var lastParameterSentAt: Date?
+    @Published var lastEchoAt: Date?
     @Published var lastError: String?
 
     var isReady: Bool {
@@ -106,6 +116,12 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
 
         guard shouldTransmit, isReady else { return }
         sendParameters(markAsInitialSync: false)
+    }
+
+    func recordRequestedPower(limitA: Int, limitB: Int) {
+        requestedPowerA = limitA
+        requestedPowerB = limitB
+        requestedPowerChangedAt = Date()
     }
 
     func stage(_ packet: Data) {
@@ -253,6 +269,13 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         sentPulsePacketCount = 0
         queuedPulsePacketCount = 0
         notifyFrameCount = 0
+        lastPulsePowerA = nil
+        lastPulsePowerB = nil
+        lastPulsePowerSentAt = nil
+        lastParameterLimitA = nil
+        lastParameterLimitB = nil
+        lastParameterSentAt = nil
+        lastEchoAt = nil
         if clearPeripheral {
             connectedPeripheral = nil
         }
@@ -270,6 +293,33 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
             sentPulsePacketCount += 1
             lastWriteSummary = "Sent live pulse batch #\(sentPulsePacketCount) (\(responseLabel))."
         }
+
+        let now = Date()
+        if data.first == 0xB0, data.count >= 4 {
+            lastPulsePowerA = Int(data[2])
+            lastPulsePowerB = Int(data[3])
+            lastPulsePowerSentAt = now
+        } else if data.first == 0xBF, data.count >= 3 {
+            lastParameterLimitA = Int(data[1])
+            lastParameterLimitB = Int(data[2])
+            lastParameterSentAt = now
+        }
+    }
+
+    var requestedPowerSummary: String {
+        powerSummary(prefix: "Requested", powerA: requestedPowerA, powerB: requestedPowerB, at: requestedPowerChangedAt)
+    }
+
+    var pulsePowerSummary: String {
+        powerSummary(prefix: "Pulse", powerA: lastPulsePowerA, powerB: lastPulsePowerB, at: lastPulsePowerSentAt)
+    }
+
+    var parameterPowerSummary: String {
+        powerSummary(prefix: "Params", powerA: lastParameterLimitA, powerB: lastParameterLimitB, at: lastParameterSentAt)
+    }
+
+    var echoPowerSummary: String {
+        powerSummary(prefix: "Echo", powerA: devicePowerA, powerB: devicePowerB, at: lastEchoAt)
     }
 }
 
@@ -447,6 +497,7 @@ extension CoyoteBluetoothManager: CBPeripheralDelegate {
             if let status = Coyote3Protocol.decodeStatusPacket(data) {
                 devicePowerA = status.powerA
                 devicePowerB = status.powerB
+                lastEchoAt = Date()
                 let modeLabel = status.shouldApplyPowerEcho ? "device-applied" : "strength-sync"
                 lastNotifySummary = "Status #\(notifyFrameCount): A \(status.powerA) / B \(status.powerB) [\(modeLabel)]"
             } else {
@@ -510,6 +561,14 @@ private extension CoyoteBluetoothManager {
         return supportedNameFragments.contains { fragment in
             uppercasedName.contains(fragment.uppercased())
         }
+    }
+
+    func powerSummary(prefix: String, powerA: Int?, powerB: Int?, at timestamp: Date?) -> String {
+        let values = "A \(powerA.map(String.init) ?? "-") / B \(powerB.map(String.init) ?? "-")"
+        guard let timestamp else { return "\(prefix): \(values)" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return "\(prefix): \(values) @ \(formatter.string(from: timestamp))"
     }
 }
 

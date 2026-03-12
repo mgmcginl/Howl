@@ -9,6 +9,7 @@ struct HowlIOSApp: App {
             ContentView()
                 .environmentObject(model)
                 .environmentObject(model.bleManager)
+                .environmentObject(model.audioEngine)
                 .onOpenURL { url in
                     model.importFile(from: url)
                 }

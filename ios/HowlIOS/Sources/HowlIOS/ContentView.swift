@@ -428,6 +428,7 @@ private struct LibraryEntryRow: View {
 
 private struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var audioEngine: AudioOutputEngine
 
     var body: some View {
         NavigationStack {
@@ -446,6 +447,14 @@ private struct PlayerView: View {
                             Text("Playlist: \(playlistName)")
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(Color.accentColor)
+                        }
+                        if model.outputMode == .audio {
+                            Text("Audio: \(audioEngine.statusSummary)")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                            Text("Route: \(audioEngine.routeSummary)")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                     }
 
@@ -695,6 +704,7 @@ private struct ActivitiesView: View {
 private struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var bleManager: CoyoteBluetoothManager
+    @EnvironmentObject private var audioEngine: AudioOutputEngine
 
     var body: some View {
         NavigationStack {
@@ -704,6 +714,20 @@ private struct SettingsView: View {
                         ForEach(OutputMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
+                    }
+                }
+
+                Section("Audio") {
+                    LabeledContent("Status", value: audioEngine.statusSummary)
+                    LabeledContent("Route", value: audioEngine.routeSummary)
+                    Text("Use Audio Output to test real background playback. BLE live control is still a separate path and may suspend when the app leaves the foreground.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
+                    if let error = audioEngine.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                     }
                 }
 
@@ -784,6 +808,10 @@ private struct SettingsView: View {
                     LabeledContent("Pulse Batches", value: "\(bleManager.sentPulsePacketCount)")
                     LabeledContent("Backpressure Hits", value: "\(bleManager.queuedPulsePacketCount)")
                     LabeledContent("Notify Frames", value: "\(bleManager.notifyFrameCount)")
+                    LabeledContent("Requested Power", value: bleManager.requestedPowerSummary)
+                    LabeledContent("Pulse Packet Power", value: bleManager.pulsePowerSummary)
+                    LabeledContent("Parameter Sync Power", value: bleManager.parameterPowerSummary)
+                    LabeledContent("Echo Power", value: bleManager.echoPowerSummary)
                 }
 
                 Section("Frequency Range") {

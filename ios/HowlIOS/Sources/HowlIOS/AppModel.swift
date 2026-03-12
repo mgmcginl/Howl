@@ -25,6 +25,7 @@ private func normalizedLibraryDisplayPathComponents(from components: [String]) -
 
 enum OutputMode: String, CaseIterable, Identifiable {
     case preview = "Preview Only"
+    case audio = "Audio Output"
     case coyote3PacketPreview = "Stage Coyote 3 Packet"
     case coyote3Live = "Live Coyote 3"
 
@@ -156,6 +157,7 @@ final class AppModel: ObservableObject {
                 maxFrequency = minFrequency
             }
             syncFrequencyRangePreset()
+            syncAudioTransport()
         }
     }
     @Published var maxFrequency = 100.0 {
@@ -165,6 +167,7 @@ final class AppModel: ObservableObject {
                 minFrequency = maxFrequency
             }
             syncFrequencyRangePreset()
+            syncAudioTransport()
         }
     }
     @Published var frequencyRangePreset: FrequencyRangePreset = .faithful {
@@ -198,12 +201,11 @@ final class AppModel: ObservableObject {
     @Published var lastError: String?
 
     let bleManager = CoyoteBluetoothManager()
+    let audioEngine = AudioOutputEngine()
 
     private var loadedSource: (any PulseSource)?
     private var loadedImportedFile: ImportedFile?
     private var playbackTask: Task<Void, Never>?
-    private var previousPowerA: Int?
-    private var previousPowerB: Int?
     private let pulseInterval = 1.0 / 40.0
     private let outputBatchSize = Coyote3Protocol.pulseBatchSize
     private let maxHistoryPoints = 36
@@ -531,6 +533,7 @@ final class AppModel: ObservableObject {
         statusMessage = outputMode == .coyote3Live && !bleManager.isReady
             ? "Playing \(sourceName) while waiting for a ready Coyote 3."
             : "Playing \(sourceName)."
+        syncAudioTransport()
         startPlaybackLoop()
     }
 
@@ -538,6 +541,7 @@ final class AppModel: ObservableObject {
         isPlaying = false
         playbackTask?.cancel()
         playbackTask = nil
+        audioEngine.stop()
         sendSilenceIfNeeded()
         currentPulse = .silence
         statusMessage = "Stopped."
@@ -546,6 +550,7 @@ final class AppModel: ObservableObject {
     func seek(to newPosition: TimeInterval) {
         position = newPosition
         playbackTickIndex = 0
+        audioEngine.seek(to: newPosition)
         renderCurrentFrame()
     }
 
@@ -560,11 +565,10 @@ final class AppModel: ObservableObject {
         duration = source.duration
         position = 0
         recentPulses = []
-        previousPowerA = nil
-        previousPowerB = nil
         playbackTickIndex = 0
         statusMessage = "Loaded \(source.displayName)."
         renderCurrentFrame()
+        syncAudioTransport()
     }
 
     private func prepareLocalLibrary() {
@@ -1176,18 +1180,22 @@ final class AppModel: ObservableObject {
             sendSilence()
         }
 
+        if oldValue == .audio && outputMode != .audio {
+            audioEngine.stop()
+        }
+
         if outputMode == .preview {
-            previousPowerA = nil
-            previousPowerB = nil
             bleManager.clearStagedPacket()
             return
         }
 
         syncBleLimits()
+        syncAudioTransport()
         renderCurrentFrame()
     }
 
     private func syncBleLimits() {
+        bleManager.recordRequestedPower(limitA: powerA, limitB: powerB)
         let shouldDeferParameterWrite =
             outputMode == .coyote3Live
             && isPlaying
@@ -1202,6 +1210,8 @@ final class AppModel: ObservableObject {
         if shouldDeferParameterWrite {
             sendImmediateLivePowerUpdate()
         }
+
+        syncAudioTransport()
     }
 
     private func reloadCurrentHWLIfNeeded() {
@@ -1242,8 +1252,8 @@ final class AppModel: ObservableObject {
                     powerB: powerB,
                     minFrequency: minFrequency,
                     maxFrequency: maxFrequency,
-                    previousPowerA: previousPowerA,
-                    previousPowerB: previousPowerB
+                    previousPowerA: bleManager.devicePowerA,
+                    previousPowerB: bleManager.devicePowerB
                 )
             } catch {
                 lastError = error.localizedDescription
@@ -1253,8 +1263,6 @@ final class AppModel: ObservableObject {
 
             guard transmit else { return }
             guard playbackTickIndex.isMultiple(of: outputBatchSize) else { return }
-            previousPowerA = powerA
-            previousPowerB = powerB
 
             if outputMode == .coyote3Live {
                 bleManager.sendLivePacket(packet)
@@ -1274,16 +1282,35 @@ final class AppModel: ObservableObject {
                 powerB: powerB,
                 minFrequency: minFrequency,
                 maxFrequency: maxFrequency,
-                previousPowerA: previousPowerA,
-                previousPowerB: previousPowerB
+                previousPowerA: bleManager.devicePowerA,
+                previousPowerB: bleManager.devicePowerB
             )
             bleManager.stage(packet)
             bleManager.sendLivePacket(packet)
-            previousPowerA = powerA
-            previousPowerB = powerB
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func syncAudioTransport() {
+        guard outputMode == .audio else {
+            audioEngine.stop()
+            return
+        }
+
+        guard let source = loadedSource, isPlaying else {
+            audioEngine.stop()
+            return
+        }
+
+        audioEngine.start(
+            source: source,
+            position: position,
+            minFrequency: minFrequency,
+            maxFrequency: maxFrequency,
+            powerA: powerA,
+            powerB: powerB
+        )
     }
 
     private func buildCoyoteBatch(source: any PulseSource, at time: TimeInterval) -> [Pulse]? {
@@ -1307,12 +1334,10 @@ final class AppModel: ObservableObject {
                 powerB: powerB,
                 minFrequency: minFrequency,
                 maxFrequency: maxFrequency,
-                previousPowerA: previousPowerA,
-                previousPowerB: previousPowerB
+                previousPowerA: bleManager.devicePowerA,
+                previousPowerB: bleManager.devicePowerB
             )
             bleManager.sendLivePacket(packet)
-            previousPowerA = powerA
-            previousPowerB = powerB
         } catch {
             lastError = error.localizedDescription
         }
