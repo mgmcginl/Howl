@@ -116,9 +116,9 @@ GitHub secrets are easier if the binary files are base64 encoded first.
 On Windows PowerShell:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("ios_distribution.p12")) | Set-Content build_certificate_base64.txt
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("YourProfile.mobileprovision")) | Set-Content build_profile_base64.txt
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_ABC123XYZ.p8")) | Set-Content app_store_connect_key_base64.txt
+[IO.File]::WriteAllText("build_certificate_base64.txt", [Convert]::ToBase64String([IO.File]::ReadAllBytes("ios_distribution.p12")), [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText("build_profile_base64.txt", [Convert]::ToBase64String([IO.File]::ReadAllBytes("YourProfile.mobileprovision")), [Text.Encoding]::ASCII)
+[IO.File]::WriteAllText("app_store_connect_key_base64.txt", [Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_ABC123XYZ.p8")), [Text.Encoding]::ASCII)
 ```
 
 ## 7. Add GitHub Secrets

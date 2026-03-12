@@ -23,8 +23,8 @@ xcodegen generate
 open HowlIOS.xcodeproj
 ```
 
-For the first real device session, use [HARDWARE_TEST.md](C:/Users/MarkMcGinley/w-claude-session-43/w-claude-iphone-version/ios/HARDWARE_TEST.md).
-For cloud signing and TestFlight without a Mac, use [TESTFLIGHT_SETUP.md](C:/Users/MarkMcGinley/w-claude-session-43/w-claude-iphone-version/ios/TESTFLIGHT_SETUP.md).
+For the first real device session, use [HARDWARE_TEST.md](HARDWARE_TEST.md).
+For cloud signing and TestFlight without a Mac, use [TESTFLIGHT_SETUP.md](TESTFLIGHT_SETUP.md).
 
 ## Current MVP scope
 

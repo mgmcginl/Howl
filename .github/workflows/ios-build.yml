@@ -6,10 +6,12 @@ on:
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
+      - ".github/workflows/ios-release.yml"
   pull_request:
     paths:
       - "ios/**"
       - ".github/workflows/ios-build.yml"
+      - ".github/workflows/ios-release.yml"
 
 jobs:
   build-ios:
