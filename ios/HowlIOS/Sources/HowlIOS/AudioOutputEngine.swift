@@ -54,7 +54,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setCategory(
                 .playback,
                 mode: .default,
-                options: [.allowAirPlay, .allowBluetooth, .allowBluetoothA2DP, .defaultToSpeaker]
+                options: [.allowAirPlay, .allowBluetoothA2DP]
             )
             try session.setActive(true)
             updateRouteSummary()

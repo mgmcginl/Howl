@@ -1196,18 +1196,19 @@ final class AppModel: ObservableObject {
 
     private func syncBleLimits() {
         bleManager.recordRequestedPower(limitA: powerA, limitB: powerB)
-        let shouldDeferParameterWrite =
-            outputMode == .coyote3Live
+        let shouldTransmitParameters = outputMode == .coyote3Live
+        let shouldSendLivePowerUpdate =
+            shouldTransmitParameters
             && isPlaying
             && loadedSource != nil
 
         bleManager.updateDesiredLimits(
             limitA: powerA,
             limitB: powerB,
-            shouldTransmit: !shouldDeferParameterWrite
+            shouldTransmit: shouldTransmitParameters
         )
 
-        if shouldDeferParameterWrite {
+        if shouldSendLivePowerUpdate {
             sendImmediateLivePowerUpdate()
         }
 
