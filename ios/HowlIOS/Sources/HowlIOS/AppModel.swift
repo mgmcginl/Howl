@@ -833,11 +833,16 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func archivePathComponents(for entryPath: String) -> [String] {
-        var components = entryPath
-            .replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/")
-            .map(String.init)
-            .filter { $0.isEmpty == false && $0 != "." && $0 != ".." }
+        let normalizedPath = entryPath.replacingOccurrences(of: "\\", with: "/")
+        let rawComponents = normalizedPath.split(separator: "/")
+        var components: [String] = []
+        components.reserveCapacity(rawComponents.count)
+
+        for rawComponent in rawComponents {
+            let component = String(rawComponent)
+            guard component.isEmpty == false, component != ".", component != ".." else { continue }
+            components.append(component)
+        }
 
         if let first = components.first, first.hasSuffix(":") {
             components.removeFirst()
