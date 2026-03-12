@@ -323,7 +323,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     }
 }
 
-extension CoyoteBluetoothManager: CBCentralManagerDelegate {
+extension CoyoteBluetoothManager: @preconcurrency CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
@@ -382,7 +382,7 @@ extension CoyoteBluetoothManager: CBCentralManagerDelegate {
     }
 }
 
-extension CoyoteBluetoothManager: CBPeripheralDelegate {
+extension CoyoteBluetoothManager: @preconcurrency CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             lastError = error.localizedDescription

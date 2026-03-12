@@ -1240,7 +1240,7 @@ final class AppModel: ObservableObject {
 
     private func applyOutput(for _: Pulse, source: any PulseSource, at time: TimeInterval, transmit: Bool) {
         switch outputMode {
-        case .preview:
+        case .preview, .audio:
             bleManager.clearStagedPacket()
         case .coyote3PacketPreview, .coyote3Live:
             guard let pulses = buildCoyoteBatch(source: source, at: time) else { return }
