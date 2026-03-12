@@ -22,9 +22,15 @@ final class AudioOutputEngine: NSObject, ObservableObject {
 
     private let session = AVAudioSession.sharedInstance()
     private let engine = AVAudioEngine()
+    private let playerNode = AVAudioPlayerNode()
     private let stateLock = NSLock()
-    private lazy var sourceNode = makeSourceNode()
     private let renderFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+    private let chunkFrameCount: AVAudioFrameCount = 4_096
+    private let targetBufferedChunkCount = 3
+
+    private var playbackState = PlaybackState()
+    private var schedulingTask: Task<Void, Never>?
+    private var scheduledBufferCount = 0
 
     override init() {
         super.init()
@@ -66,6 +72,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         do {
             try session.setActive(true)
             updateRouteSummary()
+
+            let shouldResetPlaybackCursor = playbackState.isActive == false
             updateState(
                 source: source,
                 position: position,
@@ -73,7 +81,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 maxFrequency: maxFrequency,
                 powerA: powerA,
                 powerB: powerB,
-                resetPhase: false,
+                resetPlaybackCursor: shouldResetPlaybackCursor,
                 isActive: true
             )
 
@@ -81,6 +89,12 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 try engine.start()
             }
 
+            if playerNode.isPlaying == false {
+                playerNode.play()
+            }
+
+            ensureSchedulingLoop()
+            topOffBuffers()
             statusSummary = "Audio output active"
             lastError = nil
         } catch {
@@ -90,7 +104,11 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     }
 
     func stop() {
+        schedulingTask?.cancel()
+        schedulingTask = nil
+        scheduledBufferCount = 0
         updateActive(false)
+        playerNode.stop()
         if engine.isRunning {
             engine.stop()
         }
@@ -111,31 +129,62 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         playbackState.phaseA = 0
         playbackState.phaseB = 0
         stateLock.unlock()
+
+        guard playerNode.isPlaying else { return }
+        scheduledBufferCount = 0
+        playerNode.stop()
+        playerNode.play()
+        topOffBuffers()
     }
 
-    private var playbackState = PlaybackState()
-
     private func configureEngine() {
-        engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: renderFormat)
+        engine.attach(playerNode)
+        engine.connect(playerNode, to: engine.mainMixerNode, format: renderFormat)
         engine.prepare()
     }
 
-    private func makeSourceNode() -> AVAudioSourceNode {
-        AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
-            guard let self else { return noErr }
-            return self.render(frameCount: frameCount, audioBufferList: audioBufferList)
+    private func ensureSchedulingLoop() {
+        guard schedulingTask == nil else { return }
+        schedulingTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await MainActor.run {
+                    self.topOffBuffers()
+                }
+                try? await Task.sleep(for: .milliseconds(20))
+            }
         }
     }
 
-    private func render(frameCount: AVAudioFrameCount, audioBufferList: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
-        let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-        guard let leftBuffer = ablPointer[safe: 0]?.mData?.assumingMemoryBound(to: Float.self) else {
-            return noErr
+    private func topOffBuffers() {
+        guard playbackState.isActive else { return }
+        while scheduledBufferCount < targetBufferedChunkCount {
+            guard let buffer = makeBuffer() else { break }
+            scheduledBufferCount += 1
+            playerNode.scheduleBuffer(buffer) { [weak self] in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.scheduledBufferCount = max(0, self.scheduledBufferCount - 1)
+                    if self.playbackState.isActive {
+                        self.topOffBuffers()
+                    }
+                }
+            }
         }
-        let rightBuffer = ablPointer.count > 1
-            ? ablPointer[1].mData?.assumingMemoryBound(to: Float.self)
-            : nil
+    }
+
+    private func makeBuffer() -> AVAudioPCMBuffer? {
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: renderFormat,
+            frameCapacity: chunkFrameCount
+        ) else {
+            return nil
+        }
+
+        buffer.frameLength = chunkFrameCount
+        guard let channels = buffer.floatChannelData else { return nil }
+        let leftBuffer = channels[0]
+        let rightBuffer = channels[1]
 
         let sampleRate = renderFormat.sampleRate
         let twoPi = Double.pi * 2
@@ -144,10 +193,10 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         var state = playbackState
         stateLock.unlock()
 
-        for frame in 0..<Int(frameCount) {
+        for frame in 0..<Int(chunkFrameCount) {
             guard state.isActive, let source = state.source else {
                 leftBuffer[frame] = 0
-                rightBuffer?[frame] = 0
+                rightBuffer[frame] = 0
                 continue
             }
 
@@ -158,7 +207,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                     pulse = source.pulse(at: absoluteTime.truncatingRemainder(dividingBy: duration))
                 } else if absoluteTime >= duration {
                     leftBuffer[frame] = 0
-                    rightBuffer?[frame] = 0
+                    rightBuffer[frame] = 0
                     state.isActive = false
                     continue
                 } else {
@@ -180,17 +229,15 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
             if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
 
-            let sampleA = Float(sin(state.phaseA) * amplitudeA)
-            let sampleB = Float(sin(state.phaseB) * amplitudeB)
-            leftBuffer[frame] = sampleA
-            rightBuffer?[frame] = sampleB
+            leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
+            rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
             state.sampleCursor += 1
         }
 
         stateLock.lock()
         playbackState = state
         stateLock.unlock()
-        return noErr
+        return buffer
     }
 
     private func updateState(
@@ -200,19 +247,20 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         maxFrequency: Double,
         powerA: Int,
         powerB: Int,
-        resetPhase: Bool,
+        resetPlaybackCursor: Bool,
         isActive: Bool
     ) {
         stateLock.lock()
         playbackState.source = source
-        playbackState.position = position
-        playbackState.sampleCursor = 0
         playbackState.minFrequency = minFrequency
         playbackState.maxFrequency = maxFrequency
         playbackState.gainA = Self.channelGain(for: powerA)
         playbackState.gainB = Self.channelGain(for: powerB)
         playbackState.isActive = isActive
-        if resetPhase {
+
+        if resetPlaybackCursor {
+            playbackState.position = position
+            playbackState.sampleCursor = 0
             playbackState.phaseA = 0
             playbackState.phaseB = 0
         }
@@ -238,13 +286,6 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private static func channelGain(for power: Int) -> Double {
         let normalized = Double(power.clamped(to: 0...200)) / 200.0
         return normalized * 0.3
-    }
-}
-
-private extension UnsafeMutableAudioBufferListPointer {
-    subscript(safe index: Int) -> AudioBuffer? {
-        guard indices.contains(index) else { return nil }
-        return self[index]
     }
 }
 
