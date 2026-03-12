@@ -77,8 +77,9 @@ jobs:
           import os
           from pathlib import Path
 
-          Path(os.environ["CERT_PATH"]).write_bytes(base64.b64decode(os.environ["BUILD_CERTIFICATE_BASE64"]))
-          Path(os.environ["PROFILE_PATH"]).write_bytes(base64.b64decode(os.environ["BUILD_PROVISION_PROFILE_BASE64"]))
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          (runner_temp / "build_certificate.p12").write_bytes(base64.b64decode(os.environ["BUILD_CERTIFICATE_BASE64"]))
+          (runner_temp / "build_profile.mobileprovision").write_bytes(base64.b64decode(os.environ["BUILD_PROVISION_PROFILE_BASE64"]))
           PY
 
           mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
@@ -120,7 +121,10 @@ jobs:
           import os
           from pathlib import Path
 
-          Path(os.environ["API_KEY_PATH"]).write_bytes(base64.b64decode(os.environ["APP_STORE_CONNECT_API_KEY_BASE64"]))
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          key_id = os.environ["APP_STORE_CONNECT_KEY_ID"]
+          api_key_path = runner_temp / "private_keys" / f"AuthKey_{key_id}.p8"
+          api_key_path.write_bytes(base64.b64decode(os.environ["APP_STORE_CONNECT_API_KEY_BASE64"]))
           PY
 
           echo "api_key_dir=$API_KEY_DIR" >> "$GITHUB_OUTPUT"
