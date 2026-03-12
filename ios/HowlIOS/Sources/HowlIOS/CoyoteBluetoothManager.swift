@@ -62,6 +62,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     private var pendingWriteIntent: PendingWriteIntent?
     private var notifySubscriptionRequested = false
     private var queuedPulsePacket: Data?
+    private var queuedResponseWrite: (data: Data, intent: PendingWriteIntent)?
 
     override init() {
         super.init()
@@ -152,6 +153,11 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         switch intent {
         case .initialSync, .parameterUpdate:
             if properties.contains(.write) {
+                guard pendingWriteIntent == nil else {
+                    queuedResponseWrite = (data, intent)
+                    lastWriteSummary = "Queued a control packet while waiting for the previous write response."
+                    return
+                }
                 writeType = .withResponse
                 pendingWriteIntent = intent
             } else if properties.contains(.writeWithoutResponse) {
@@ -173,6 +179,11 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
                 pendingWriteIntent = nil
                 queuedPulsePacket = nil
             } else if properties.contains(.write) {
+                guard pendingWriteIntent == nil else {
+                    queuedResponseWrite = (data, intent)
+                    lastWriteSummary = "Queued latest live pulse batch while waiting for a write response."
+                    return
+                }
                 writeType = .withResponse
                 pendingWriteIntent = intent
             } else {
@@ -223,6 +234,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         pendingWriteIntent = nil
         notifySubscriptionRequested = false
         queuedPulsePacket = nil
+        queuedResponseWrite = nil
         lastNotifyHex = ""
         batteryLevel = nil
         devicePowerA = nil
@@ -449,6 +461,11 @@ extension CoyoteBluetoothManager: CBPeripheralDelegate {
 
         if intent == .initialSync {
             finishInitialSync()
+        }
+
+        if let queuedResponseWrite {
+            self.queuedResponseWrite = nil
+            write(queuedResponseWrite.data, intent: queuedResponseWrite.intent)
         }
     }
 
