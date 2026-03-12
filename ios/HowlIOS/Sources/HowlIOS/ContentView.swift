@@ -411,6 +411,12 @@ private struct LibraryEntryRow: View {
                         Label("Remove from This Playlist", systemImage: "trash")
                     }
                 }
+
+                Button(role: .destructive) {
+                    model.deleteLibraryEntry(entry)
+                } label: {
+                    Label("Delete File", systemImage: "trash.fill")
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .foregroundStyle(.secondary)
@@ -420,6 +426,13 @@ private struct LibraryEntryRow: View {
         .padding(.vertical, 2)
         .listRowBackground(model.isLoadedLibraryEntry(entry) ? Color.accentColor.opacity(0.12) : Color.clear)
         .contentShape(Rectangle())
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                model.deleteLibraryEntry(entry)
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
         .onTapGesture {
             model.loadLibraryEntry(entry, playlistID: currentPlaylistID)
         }

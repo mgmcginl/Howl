@@ -377,6 +377,35 @@ final class AppModel: ObservableObject {
         currentPlaylistID = playlistID
     }
 
+    func deleteLibraryEntry(_ entry: LibraryEntry) {
+        do {
+            try FileManager.default.removeItem(at: entry.url)
+            libraryEntries.removeAll { $0.relativePath == entry.relativePath }
+            favoriteLibraryRelativePaths.remove(entry.relativePath)
+            playlists = playlists.map { playlist in
+                var updated = playlist
+                updated.entryRelativePaths.removeAll { $0 == entry.relativePath }
+                return updated
+            }
+
+            if loadedLibraryRelativePath == entry.relativePath {
+                loadedLibraryRelativePath = nil
+                currentPlaylistID = nil
+            }
+
+            persistFavoritesForCurrentLibrary()
+            persistPlaylists()
+            libraryStatusMessage = libraryEntries.isEmpty
+                ? "No supported files found in \(libraryFolderName)."
+                : "Indexed \(libraryEntries.count) supported files."
+            statusMessage = "Deleted \(entry.displayName) from the library."
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+            statusMessage = "Could not delete \(entry.displayName)."
+        }
+    }
+
     func toggleFavorite(for entry: LibraryEntry) {
         if favoriteLibraryRelativePaths.contains(entry.relativePath) {
             favoriteLibraryRelativePaths.remove(entry.relativePath)
