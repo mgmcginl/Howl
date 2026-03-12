@@ -24,11 +24,22 @@ final class AppModel: ObservableObject {
         let modifiedAt: Date?
 
         var id: String { url.absoluteString }
+
+        var pathComponents: [String] {
+            relativePath
+                .split(separator: "/")
+                .map(String.init)
+        }
+
+        var topLevelGroupName: String {
+            pathComponents.dropLast().first ?? "Root Files"
+        }
     }
 
     private enum LibraryDefaults {
         static let bookmarkKey = "Howl.LibraryFolderBookmark"
         static let supportedExtensions = Set(["hwl", "funscript"])
+        static let favoritesKeyPrefix = "Howl.LibraryFavorites."
     }
 
     @Published var sourceName = "No source loaded"
@@ -64,6 +75,7 @@ final class AppModel: ObservableObject {
     @Published var libraryFolderName = "No library folder selected"
     @Published var libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
     @Published var libraryEntries: [LibraryEntry] = []
+    @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
 
@@ -136,6 +148,7 @@ final class AppModel: ObservableObject {
             libraryFolderURL = url
             libraryFolderAccessIsActive = didStartAccess
             libraryFolderName = url.lastPathComponent
+            loadFavoritesForCurrentLibrary()
             refreshLibrary()
         } catch {
             if didStartAccess {
@@ -171,6 +184,19 @@ final class AppModel: ObservableObject {
 
     func loadLibraryEntry(_ entry: LibraryEntry) {
         importFile(from: entry.url)
+    }
+
+    func toggleFavorite(for entry: LibraryEntry) {
+        if favoriteLibraryRelativePaths.contains(entry.relativePath) {
+            favoriteLibraryRelativePaths.remove(entry.relativePath)
+        } else {
+            favoriteLibraryRelativePaths.insert(entry.relativePath)
+        }
+        persistFavoritesForCurrentLibrary()
+    }
+
+    func isFavorite(_ entry: LibraryEntry) -> Bool {
+        favoriteLibraryRelativePaths.contains(entry.relativePath)
     }
 
     func loadGenerator(playImmediately: Bool = false) {
@@ -281,6 +307,7 @@ final class AppModel: ObservableObject {
             libraryFolderURL = resolvedURL
             libraryFolderAccessIsActive = didStartAccess
             libraryFolderName = resolvedURL.lastPathComponent
+            loadFavoritesForCurrentLibrary()
 
             if isStale {
                 let refreshedBookmark = try resolvedURL.bookmarkData(
@@ -297,6 +324,7 @@ final class AppModel: ObservableObject {
             libraryEntries = []
             libraryFolderName = "No library folder selected"
             libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+            favoriteLibraryRelativePaths = []
         }
     }
 
@@ -345,6 +373,29 @@ final class AppModel: ObservableObject {
         }
 
         return entries
+    }
+
+    private func currentFavoritesDefaultsKey() -> String? {
+        guard let libraryFolderURL else { return nil }
+        return LibraryDefaults.favoritesKeyPrefix + libraryFolderURL.path
+    }
+
+    private func loadFavoritesForCurrentLibrary() {
+        guard let key = currentFavoritesDefaultsKey() else {
+            favoriteLibraryRelativePaths = []
+            return
+        }
+
+        let stored = UserDefaults.standard.array(forKey: key) as? [String] ?? []
+        favoriteLibraryRelativePaths = Set(stored)
+    }
+
+    private func persistFavoritesForCurrentLibrary() {
+        guard let key = currentFavoritesDefaultsKey() else { return }
+        let sortedFavorites = favoriteLibraryRelativePaths.sorted { lhs, rhs in
+            lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+        UserDefaults.standard.set(sortedFavorites, forKey: key)
     }
 
     private func startPlaybackLoop() {

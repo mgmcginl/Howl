@@ -46,6 +46,24 @@ private struct LibraryView: View {
         }
     }
 
+    private var favoriteEntries: [AppModel.LibraryEntry] {
+        filteredEntries.filter { model.isFavorite($0) }.sorted(by: librarySort)
+    }
+
+    private var groupedEntries: [(name: String, entries: [AppModel.LibraryEntry])] {
+        let nonFavoriteEntries = filteredEntries.filter { !model.isFavorite($0) }
+        let grouped = Dictionary(grouping: nonFavoriteEntries) { $0.topLevelGroupName }
+        return grouped
+            .map { key, value in
+                (name: key, entries: value.sorted(by: librarySort))
+            }
+            .sorted {
+                if $0.name == "Root Files" { return true }
+                if $1.name == "Root Files" { return false }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+    }
+
     var body: some View {
         NavigationStack {
             List {
@@ -71,29 +89,25 @@ private struct LibraryView: View {
                     }
                 }
 
-                Section(filteredEntries.isEmpty ? "Files" : "Files (\(filteredEntries.count))") {
-                    if filteredEntries.isEmpty {
+                if filteredEntries.isEmpty {
+                    Section("Files") {
                         Text("No supported `.hwl` or `.funscript` files found yet.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(filteredEntries) { entry in
-                            Button {
-                                model.loadLibraryEntry(entry)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(entry.displayName)
-                                        .foregroundStyle(.primary)
-                                    Text(entry.relativePath)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if let modifiedAt = entry.modifiedAt {
-                                        Text(modifiedAt, style: .date)
-                                            .font(.caption2)
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .padding(.vertical, 2)
+                    }
+                } else {
+                    if !favoriteEntries.isEmpty {
+                        Section("Favorites (\(favoriteEntries.count))") {
+                            ForEach(favoriteEntries) { entry in
+                                LibraryEntryRow(entry: entry)
+                            }
+                        }
+                    }
+
+                    ForEach(groupedEntries, id: \.name) { group in
+                        Section("\(group.name) (\(group.entries.count))") {
+                            ForEach(group.entries) { entry in
+                                LibraryEntryRow(entry: entry)
                             }
                         }
                     }
@@ -112,6 +126,47 @@ private struct LibraryView: View {
                     model.lastError = error.localizedDescription
                 }
             }
+        }
+    }
+
+    private func librarySort(lhs: AppModel.LibraryEntry, rhs: AppModel.LibraryEntry) -> Bool {
+        lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+    }
+}
+
+private struct LibraryEntryRow: View {
+    @EnvironmentObject private var model: AppModel
+    let entry: AppModel.LibraryEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.displayName)
+                    .foregroundStyle(.primary)
+                Text(entry.relativePath)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let modifiedAt = entry.modifiedAt {
+                    Text(modifiedAt, style: .date)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                model.toggleFavorite(for: entry)
+            } label: {
+                Image(systemName: model.isFavorite(entry) ? "star.fill" : "star")
+                    .foregroundStyle(model.isFavorite(entry) ? .yellow : .secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            model.loadLibraryEntry(entry)
         }
     }
 }
