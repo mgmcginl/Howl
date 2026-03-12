@@ -174,30 +174,20 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard urls.isEmpty == false else {
-                onComplete(.failure(ScriptPickerError.noFileSelected))
-                return
-            }
+            completeSelection(urls)
+        }
 
-            onComplete(.success(urls))
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentAt url: URL) {
+            completeSelection([url])
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onComplete(.failure(ScriptPickerError.cancelled))
+            // No-op. Cancelling the picker should not look like an app error.
         }
-    }
 
-    private enum ScriptPickerError: LocalizedError {
-        case noFileSelected
-        case cancelled
-
-        var errorDescription: String? {
-            switch self {
-            case .noFileSelected:
-                return "No file was selected."
-            case .cancelled:
-                return nil
-            }
+        private func completeSelection(_ urls: [URL]) {
+            guard urls.isEmpty == false else { return }
+            onComplete(.success(urls))
         }
     }
 }
