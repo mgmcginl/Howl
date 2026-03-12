@@ -79,6 +79,7 @@ final class AppModel: ObservableObject {
         }
 
         do {
+            lastError = nil
             let data = try Data(contentsOf: url)
             let ext = url.pathExtension.lowercased()
             switch ext {

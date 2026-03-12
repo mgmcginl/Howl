@@ -22,6 +22,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
 
     @Published var state: ConnectionState = .unavailable
     @Published var lastSeenDeviceName = "None"
+    @Published var seenDeviceSummary = "None"
     @Published var stagedPacketHex = ""
     @Published var lastNotifyHex = ""
     @Published var batteryLevel: Int?
@@ -39,8 +40,8 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         state == .ready
     }
 
-    private let supportedDeviceNames = ["47L121000"]
-    private let scanTimeoutSeconds: Double = 10
+    private let supportedNameFragments = ["47L121000", "47L", "D-LAB ESTIM01", "D-LAB"]
+    private let scanTimeoutSeconds: Double = 15
     private let batteryPollIntervalSeconds: Double = 60.02
     private let clientConfigDescriptorUUID = CBUUID(string: "2902")
     private let mainServiceUUID = CBUUID(nsuuid: Coyote3Protocol.mainServiceUUID)
@@ -62,6 +63,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     private var notifySubscriptionRequested = false
     private var queuedPulsePacket: Data?
     private var queuedResponseWrite: (data: Data, intent: PendingWriteIntent)?
+    private var seenDevices: [String] = []
 
     override init() {
         super.init()
@@ -78,6 +80,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         resetSession(clearPeripheral: true)
         lastError = nil
         batteryLevel = nil
+        lastSeenDeviceName = "None"
         state = .scanning
         central.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
@@ -127,7 +130,11 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
             guard !Task.isCancelled, state == .scanning else { return }
             central.stopScan()
             state = .disconnected
-            lastError = "Timed out while searching for a Coyote 3."
+            if seenDevices.isEmpty {
+                lastError = "Timed out while searching for a Coyote 3."
+            } else {
+                lastError = "Timed out while searching for a Coyote 3. iPhone saw: \(seenDevices.joined(separator: ", "))."
+            }
         }
     }
 
@@ -234,6 +241,8 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         notifySubscriptionRequested = false
         queuedPulsePacket = nil
         queuedResponseWrite = nil
+        seenDevices = []
+        seenDeviceSummary = "None"
         lastNotifyHex = ""
         batteryLevel = nil
         devicePowerA = nil
@@ -283,8 +292,14 @@ extension CoyoteBluetoothManager: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
-        let candidateName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? "Unknown"
-        guard supportedDeviceNames.contains(candidateName) else { return }
+        let candidateName = normalizedDeviceName(
+            peripheral.name
+                ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        )
+        recordSeenDevice(candidateName)
+
+        let advertisedServiceUUIDs = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+        guard isSupportedCandidate(name: candidateName, serviceUUIDs: advertisedServiceUUIDs) else { return }
 
         lastSeenDeviceName = candidateName
         connectedPeripheral = peripheral
@@ -471,6 +486,30 @@ extension CoyoteBluetoothManager: CBPeripheralDelegate {
     func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
         guard isReady, let queuedPulsePacket else { return }
         write(queuedPulsePacket, intent: .pulse)
+    }
+}
+
+private extension CoyoteBluetoothManager {
+    func normalizedDeviceName(_ name: String?) -> String {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "Unnamed peripheral" : trimmed
+    }
+
+    func recordSeenDevice(_ name: String) {
+        guard !seenDevices.contains(name) else { return }
+        seenDevices.append(name)
+        seenDeviceSummary = seenDevices.joined(separator: ", ")
+    }
+
+    func isSupportedCandidate(name: String, serviceUUIDs: [CBUUID]) -> Bool {
+        if serviceUUIDs.contains(mainServiceUUID) || serviceUUIDs.contains(batteryServiceUUID) {
+            return true
+        }
+
+        let uppercasedName = name.uppercased()
+        return supportedNameFragments.contains { fragment in
+            uppercasedName.contains(fragment.uppercased())
+        }
     }
 }
 

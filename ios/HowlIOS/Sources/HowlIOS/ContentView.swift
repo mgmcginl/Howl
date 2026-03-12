@@ -124,7 +124,7 @@ private struct PlayerView: View {
             .navigationTitle("Howl")
             .fileImporter(
                 isPresented: $showImporter,
-                allowedContentTypes: [.data, .json, UTType(filenameExtension: "hwl") ?? .data, UTType(filenameExtension: "funscript") ?? .json]
+                allowedContentTypes: [.howlHWL, .howlFunscript, .json, .data]
             ) { result in
                 switch result {
                 case .success(let url):
@@ -305,6 +305,7 @@ private struct SettingsView: View {
                 Section("BLE") {
                     LabeledContent("State", value: bleManager.state.rawValue)
                     LabeledContent("Last Seen", value: bleManager.lastSeenDeviceName)
+                    LabeledContent("Seen Devices", value: bleManager.seenDeviceSummary)
                     LabeledContent("Battery", value: bleManager.batteryLevel.map { "\($0)%" } ?? "Unknown")
                     LabeledContent(
                         "Device Echo",

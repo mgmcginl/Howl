@@ -21,10 +21,35 @@ targets:
       properties:
         CFBundleDisplayName: Howl
         CFBundleIconName: AppIcon
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Howl HWL Script
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes:
+              - com.markmcginley.howl.hwl
+          - CFBundleTypeName: Funscript
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes:
+              - com.markmcginley.howl.funscript
+        LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         NSBluetoothAlwaysUsageDescription: Howl uses Bluetooth to discover and connect to compatible devices.
         NSBluetoothPeripheralUsageDescription: Howl uses Bluetooth to discover and connect to compatible devices.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.markmcginley.howl.hwl
+            UTTypeDescription: Howl HWL File
+            UTTypeConformsTo:
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - hwl
+          - UTTypeIdentifier: com.markmcginley.howl.funscript
+            UTTypeDescription: Funscript File
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - funscript
         UIBackgroundModes:
           - bluetooth-central
           - audio
