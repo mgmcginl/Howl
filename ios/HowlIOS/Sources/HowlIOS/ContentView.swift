@@ -42,6 +42,9 @@ private struct PlayerView: View {
                         Text(model.statusMessage)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        Text("Output: \(model.outputMode.rawValue)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.tertiary)
                     }
 
                     if let duration = model.duration {
@@ -263,7 +266,7 @@ private struct ActivitiesView: View {
                 }
 
                 Section("Why this is scoped down") {
-                    Text("This iPhone MVP keeps the safe, portable parts first: file playback, pulse timing, generator logic, BLE discovery, and packet staging. Full parity with Android should wait until real hardware validation.")
+                    Text("This iPhone MVP keeps the safe, portable parts first: file playback, pulse timing, generator logic, and one clean Coyote 3 path. Full parity with Android should wait until real hardware validation.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -291,14 +294,15 @@ private struct SettingsView: View {
                 Section("BLE") {
                     LabeledContent("State", value: bleManager.state.rawValue)
                     LabeledContent("Last Seen", value: bleManager.lastSeenDeviceName)
+                    LabeledContent("Battery", value: bleManager.batteryLevel.map { "\($0)%" } ?? "Unknown")
 
-                    if bleManager.state == .connected {
-                        Button("Disconnect") {
-                            bleManager.disconnect()
+                    if bleManager.state == .disconnected || bleManager.state == .unavailable {
+                        Button("Scan for Coyote 3") {
+                            bleManager.connectOrScan()
                         }
                     } else {
-                        Button("Scan for Device") {
-                            bleManager.connectOrScan()
+                        Button("Disconnect") {
+                            bleManager.disconnect()
                         }
                     }
 
@@ -310,6 +314,22 @@ private struct SettingsView: View {
                                 .font(.caption.monospaced())
                                 .textSelection(.enabled)
                         }
+                    }
+
+                    if !bleManager.lastNotifyHex.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Last Notify Frame")
+                                .font(.caption.weight(.semibold))
+                            Text(bleManager.lastNotifyHex)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if let error = bleManager.lastError {
+                        Text(error)
+                            .font(.footnote)
+                            .foregroundStyle(.red)
                     }
                 }
 
@@ -329,7 +349,7 @@ private struct SettingsView: View {
                 }
 
                 Section("Notes") {
-                    Text("The BLE transport here is scaffolding, not finished hardware support. That is deliberate: iPhone distribution and device safety are the hard problems, so we want a clean core before we get aggressive with writes.")
+                    Text("This build now performs the Coyote 3 notify subscription, parameter sync, battery reads, and live pulse writes. Coyote 2, recorder mode, and hardware validation still need a separate pass.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

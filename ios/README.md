@@ -5,7 +5,7 @@ This folder contains a native SwiftUI iPhone/iPad prototype for Howl.
 What is here now:
 - A generator-based Xcode project (`project.yml`) for XcodeGen.
 - A reusable `HowlCore` framework for HWL parsing, funscript playback, generator logic, and Coyote packet encoding.
-- A SwiftUI app shell with player, generator, activity presets, settings, and BLE discovery scaffolding.
+- A SwiftUI app shell with player, generator, activity presets, settings, and a first-pass Coyote 3 BLE transport.
 - A GitHub Actions macOS build workflow that can compile the iOS app without you owning a Mac.
 
 What is intentionally not finished yet:
@@ -29,11 +29,11 @@ open HowlIOS.xcodeproj
 - Play them through a Swift-native timing loop at 40 pulses/sec.
 - Preview real-time pulse values and recent pulse history.
 - Build generator-driven output and a few activity-like presets.
-- Discover compatible BLE devices and stage Coyote 3 packets for the future transport layer.
+- Discover a Coyote 3, subscribe to its notify channel, sync parameters, poll battery, and send live pulse packets.
 
 ## Suggested next steps
 
-1. Finish the CoreBluetooth characteristic discovery and write path for Coyote 3 first.
-2. Validate the packet encoder against real hardware with conservative power defaults.
-3. Add background behavior only after foreground playback is stable.
-4. Decide whether audio-output mode matters enough to justify `AVAudioEngine`.
+1. Validate the Coyote 3 handshake and live writes against real hardware with conservative power defaults.
+2. Add write throttling or a ring buffer if iOS drops pulse frames under real-world BLE latency.
+3. Decide whether Coyote 2 support is worth the extra protocol surface.
+4. Add background behavior only after foreground playback is stable.

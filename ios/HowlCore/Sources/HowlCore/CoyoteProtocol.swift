@@ -1,7 +1,9 @@
 import Foundation
 
 public enum Coyote3Protocol {
+    public static let batteryServiceUUID = UUID(uuidString: "0000180A-0000-1000-8000-00805f9b34fb")!
     public static let mainServiceUUID = UUID(uuidString: "0000180C-0000-1000-8000-00805f9b34fb")!
+    public static let batteryCharacteristicUUID = UUID(uuidString: "00001500-0000-1000-8000-00805f9b34fb")!
     public static let writeCharacteristicUUID = UUID(uuidString: "0000150A-0000-1000-8000-00805f9b34fb")!
     public static let notifyCharacteristicUUID = UUID(uuidString: "0000150B-0000-1000-8000-00805f9b34fb")!
 

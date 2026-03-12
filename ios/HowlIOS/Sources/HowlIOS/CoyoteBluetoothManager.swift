@@ -1,5 +1,6 @@
 import CoreBluetooth
 import Foundation
+import HowlCore
 
 @MainActor
 final class CoyoteBluetoothManager: NSObject, ObservableObject {
@@ -8,17 +9,51 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         case disconnected = "Disconnected"
         case scanning = "Scanning"
         case connecting = "Connecting"
-        case connected = "Connected"
+        case discovering = "Discovering Services"
+        case subscribing = "Subscribing"
+        case syncing = "Syncing Parameters"
+        case ready = "Ready"
+    }
+
+    private enum PendingWriteIntent {
+        case initialSync
+        case parameterUpdate
+        case pulse
     }
 
     @Published var state: ConnectionState = .unavailable
     @Published var lastSeenDeviceName = "None"
     @Published var stagedPacketHex = ""
+    @Published var lastNotifyHex = ""
+    @Published var batteryLevel: Int?
     @Published var lastError: String?
 
-    private let supportedDeviceNames = ["47L121000", "D-LAB ESTIM01"]
+    var isReady: Bool {
+        state == .ready
+    }
+
+    private let supportedDeviceNames = ["47L121000"]
+    private let scanTimeoutSeconds: Double = 10
+    private let batteryPollIntervalSeconds: Double = 60.02
+    private let clientConfigDescriptorUUID = CBUUID(string: "2902")
+    private let mainServiceUUID = CBUUID(nsuuid: Coyote3Protocol.mainServiceUUID)
+    private let batteryServiceUUID = CBUUID(nsuuid: Coyote3Protocol.batteryServiceUUID)
+    private let writeCharacteristicUUID = CBUUID(nsuuid: Coyote3Protocol.writeCharacteristicUUID)
+    private let notifyCharacteristicUUID = CBUUID(nsuuid: Coyote3Protocol.notifyCharacteristicUUID)
+    private let batteryCharacteristicUUID = CBUUID(nsuuid: Coyote3Protocol.batteryCharacteristicUUID)
+
+    private var desiredLimitA = 20
+    private var desiredLimitB = 20
     private var central: CBCentralManager!
     private var connectedPeripheral: CBPeripheral?
+    private var writeCharacteristic: CBCharacteristic?
+    private var notifyCharacteristic: CBCharacteristic?
+    private var batteryCharacteristic: CBCharacteristic?
+    private var scanTimeoutTask: Task<Void, Never>?
+    private var batteryPollTask: Task<Void, Never>?
+    private var pendingWriteIntent: PendingWriteIntent?
+    private var notifySubscriptionRequested = false
+    private var queuedPulsePacket: Data?
 
     override init() {
         super.init()
@@ -32,28 +67,156 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
             return
         }
 
+        resetSession(clearPeripheral: true)
         lastError = nil
+        batteryLevel = nil
         state = .scanning
         central.scanForPeripherals(withServices: nil, options: [
             CBCentralManagerScanOptionAllowDuplicatesKey: false
         ])
+        scheduleScanTimeout()
     }
 
     func disconnect() {
+        scanTimeoutTask?.cancel()
+        batteryPollTask?.cancel()
         central.stopScan()
         if let connectedPeripheral {
             central.cancelPeripheralConnection(connectedPeripheral)
+        } else {
+            resetSession(clearPeripheral: true)
+            state = central.state == .poweredOn ? .disconnected : .unavailable
         }
-        connectedPeripheral = nil
-        state = .disconnected
+    }
+
+    func updateDesiredLimits(limitA: Int, limitB: Int) {
+        desiredLimitA = limitA
+        desiredLimitB = limitB
+
+        guard isReady else { return }
+        sendParameters(markAsInitialSync: false)
     }
 
     func stage(_ packet: Data) {
-        stagedPacketHex = packet.map { String(format: "%02X", $0) }.joined()
+        stagedPacketHex = packet.hexString
     }
 
     func clearStagedPacket() {
         stagedPacketHex = ""
+    }
+
+    func sendLivePacket(_ packet: Data) {
+        stage(packet)
+        guard isReady else { return }
+        write(packet, intent: .pulse)
+    }
+
+    private func scheduleScanTimeout() {
+        scanTimeoutTask?.cancel()
+        scanTimeoutTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(for: .seconds(scanTimeoutSeconds))
+            guard !Task.isCancelled, state == .scanning else { return }
+            central.stopScan()
+            state = .disconnected
+            lastError = "Timed out while searching for a Coyote 3."
+        }
+    }
+
+    private func sendParameters(markAsInitialSync: Bool) {
+        let packet = Coyote3Protocol.parameterPacket(
+            limitA: desiredLimitA,
+            limitB: desiredLimitB
+        )
+        write(packet, intent: markAsInitialSync ? .initialSync : .parameterUpdate)
+    }
+
+    private func write(_ data: Data, intent: PendingWriteIntent) {
+        guard let connectedPeripheral, let writeCharacteristic else {
+            if intent != .pulse {
+                lastError = "Coyote 3 write characteristic is not ready yet."
+            }
+            return
+        }
+
+        let properties = writeCharacteristic.properties
+        let writeType: CBCharacteristicWriteType
+        switch intent {
+        case .initialSync, .parameterUpdate:
+            if properties.contains(.write) {
+                writeType = .withResponse
+                pendingWriteIntent = intent
+            } else if properties.contains(.writeWithoutResponse) {
+                writeType = .withoutResponse
+                pendingWriteIntent = nil
+            } else {
+                lastError = "The Coyote 3 write characteristic does not accept writes."
+                return
+            }
+        case .pulse:
+            if properties.contains(.writeWithoutResponse) {
+                guard connectedPeripheral.canSendWriteWithoutResponse else {
+                    queuedPulsePacket = data
+                    return
+                }
+                writeType = .withoutResponse
+                pendingWriteIntent = nil
+                queuedPulsePacket = nil
+            } else if properties.contains(.write) {
+                writeType = .withResponse
+                pendingWriteIntent = intent
+            } else {
+                lastError = "The Coyote 3 write characteristic does not accept pulse writes."
+                return
+            }
+        }
+
+        connectedPeripheral.writeValue(data, for: writeCharacteristic, type: writeType)
+
+        if writeType == .withoutResponse && intent == .initialSync {
+            finishInitialSync()
+        }
+    }
+
+    private func finishInitialSync() {
+        state = .ready
+        lastError = nil
+        readBatteryLevel()
+        startBatteryPolling()
+    }
+
+    private func readBatteryLevel() {
+        guard let connectedPeripheral, let batteryCharacteristic else { return }
+        connectedPeripheral.readValue(for: batteryCharacteristic)
+    }
+
+    private func startBatteryPolling() {
+        batteryPollTask?.cancel()
+        batteryPollTask = Task { [weak self] in
+            guard let self else { return }
+            readBatteryLevel()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(batteryPollIntervalSeconds))
+                guard !Task.isCancelled else { return }
+                readBatteryLevel()
+            }
+        }
+    }
+
+    private func resetSession(clearPeripheral: Bool) {
+        scanTimeoutTask?.cancel()
+        batteryPollTask?.cancel()
+        writeCharacteristic = nil
+        notifyCharacteristic = nil
+        batteryCharacteristic = nil
+        pendingWriteIntent = nil
+        notifySubscriptionRequested = false
+        queuedPulsePacket = nil
+        lastNotifyHex = ""
+        batteryLevel = nil
+        if clearPeripheral {
+            connectedPeripheral = nil
+        }
     }
 }
 
@@ -65,6 +228,7 @@ extension CoyoteBluetoothManager: CBCentralManagerDelegate {
                 state = .disconnected
             }
         default:
+            resetSession(clearPeripheral: true)
             state = .unavailable
         }
     }
@@ -81,24 +245,28 @@ extension CoyoteBluetoothManager: CBCentralManagerDelegate {
         lastSeenDeviceName = candidateName
         connectedPeripheral = peripheral
         state = .connecting
+        scanTimeoutTask?.cancel()
         central.stopScan()
         peripheral.delegate = self
         central.connect(peripheral)
     }
 
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        state = .connected
+        resetSession(clearPeripheral: false)
         connectedPeripheral = peripheral
-        peripheral.discoverServices(nil)
+        state = .discovering
+        peripheral.discoverServices([mainServiceUUID, batteryServiceUUID])
     }
 
     func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        resetSession(clearPeripheral: true)
         state = .disconnected
-        lastError = error?.localizedDescription ?? "Failed to connect."
+        lastError = error?.localizedDescription ?? "Failed to connect to the Coyote 3."
     }
 
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        state = .disconnected
+        resetSession(clearPeripheral: true)
+        state = central.state == .poweredOn ? .disconnected : .unavailable
         if let error {
             lastError = error.localizedDescription
         }
@@ -109,6 +277,147 @@ extension CoyoteBluetoothManager: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         if let error {
             lastError = error.localizedDescription
+            disconnect()
+            return
         }
+
+        guard let services = peripheral.services else {
+            lastError = "No BLE services were discovered on the Coyote 3."
+            disconnect()
+            return
+        }
+
+        let mainService = services.first { $0.uuid == mainServiceUUID }
+        if let mainService {
+            peripheral.discoverCharacteristics([writeCharacteristicUUID, notifyCharacteristicUUID], for: mainService)
+        } else {
+            lastError = "The connected device is missing the Coyote 3 control service."
+            disconnect()
+            return
+        }
+
+        if let batteryService = services.first(where: { $0.uuid == batteryServiceUUID }) {
+            peripheral.discoverCharacteristics([batteryCharacteristicUUID], for: batteryService)
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didDiscoverCharacteristicsFor service: CBService,
+        error: Error?
+    ) {
+        if let error {
+            lastError = error.localizedDescription
+            disconnect()
+            return
+        }
+
+        guard let characteristics = service.characteristics else { return }
+
+        if service.uuid == mainServiceUUID {
+            writeCharacteristic = characteristics.first { $0.uuid == writeCharacteristicUUID }
+            notifyCharacteristic = characteristics.first { $0.uuid == notifyCharacteristicUUID }
+
+            guard let notifyCharacteristic else {
+                lastError = "The Coyote 3 notify characteristic could not be found."
+                disconnect()
+                return
+            }
+
+            guard writeCharacteristic != nil else {
+                lastError = "The Coyote 3 write characteristic could not be found."
+                disconnect()
+                return
+            }
+
+            if !notifySubscriptionRequested {
+                notifySubscriptionRequested = true
+                state = .subscribing
+                peripheral.setNotifyValue(true, for: notifyCharacteristic)
+            }
+        } else if service.uuid == batteryServiceUUID {
+            batteryCharacteristic = characteristics.first { $0.uuid == batteryCharacteristicUUID }
+            if isReady {
+                readBatteryLevel()
+            }
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateNotificationStateFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        if let error {
+            lastError = error.localizedDescription
+            disconnect()
+            return
+        }
+
+        guard characteristic.uuid == notifyCharacteristicUUID else { return }
+        guard characteristic.isNotifying else {
+            lastError = "The Coyote 3 notify channel did not stay enabled."
+            disconnect()
+            return
+        }
+
+        state = .syncing
+        sendParameters(markAsInitialSync: true)
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didUpdateValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        if let error {
+            lastError = error.localizedDescription
+            return
+        }
+
+        guard let data = characteristic.value else { return }
+
+        if characteristic.uuid == batteryCharacteristicUUID {
+            batteryLevel = data.first.map(Int.init)
+            return
+        }
+
+        if characteristic.uuid == notifyCharacteristicUUID {
+            lastNotifyHex = data.hexString
+        }
+    }
+
+    func peripheral(
+        _ peripheral: CBPeripheral,
+        didWriteValueFor characteristic: CBCharacteristic,
+        error: Error?
+    ) {
+        let intent = pendingWriteIntent
+        pendingWriteIntent = nil
+
+        if let error {
+            lastError = error.localizedDescription
+            if intent == .initialSync {
+                disconnect()
+            }
+            return
+        }
+
+        guard characteristic.uuid == writeCharacteristicUUID else { return }
+
+        if intent == .initialSync {
+            finishInitialSync()
+        }
+    }
+
+    func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        guard isReady, let queuedPulsePacket else { return }
+        write(queuedPulsePacket, intent: .pulse)
+    }
+}
+
+private extension Data {
+    var hexString: String {
+        map { String(format: "%02X", $0) }.joined()
     }
 }
