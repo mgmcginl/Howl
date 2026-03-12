@@ -32,15 +32,52 @@ final class AppModel: ObservableObject {
                 .map(String.init)
         }
 
+        var folderPathComponents: [String] {
+            Array(pathComponents.dropLast())
+        }
+
+        var folderRelativePath: String {
+            folderPathComponents.joined(separator: "/")
+        }
+
         var topLevelGroupName: String {
             pathComponents.dropLast().first ?? "Root Files"
         }
+    }
+
+    struct LibraryFolderNode: Identifiable, Equatable, Sendable {
+        let name: String
+        let relativePath: String
+        let folders: [LibraryFolderNode]
+        let files: [LibraryEntry]
+
+        var id: String { relativePath }
+
+        var totalFileCount: Int {
+            files.count + folders.reduce(0) { partial, folder in
+                partial + folder.totalFileCount
+            }
+        }
+    }
+
+    struct LibraryTree: Equatable, Sendable {
+        let rootFiles: [LibraryEntry]
+        let folders: [LibraryFolderNode]
+    }
+
+    struct Playlist: Identifiable, Codable, Equatable, Sendable {
+        let id: UUID
+        var name: String
+        var entryRelativePaths: [String]
     }
 
     private enum LibraryDefaults {
         static let supportedExtensions = Set(["hwl", "funscript", "json"])
         static let supportedImportExtensions = Set(["hwl", "funscript", "json", "zip"])
         static let favoritesKey = "Howl.LibraryFavorites.Local"
+        static let playlistsKey = "Howl.LibraryPlaylists.Local"
+        static let expandedFolderPathsKey = "Howl.LibraryExpandedFolders.Local"
+        static let expandedPlaylistIDsKey = "Howl.LibraryExpandedPlaylists.Local"
         static let localFolderName = "Imported Scripts"
     }
 
@@ -79,6 +116,9 @@ final class AppModel: ObservableObject {
     @Published var libraryEntries: [LibraryEntry] = []
     @Published var isRefreshingLibrary = false
     @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
+    @Published private(set) var playlists: [Playlist] = []
+    @Published private(set) var expandedLibraryFolderPaths: Set<String> = []
+    @Published private(set) var expandedPlaylistIDs: Set<UUID> = []
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
 
@@ -266,6 +306,80 @@ final class AppModel: ObservableObject {
         favoriteLibraryRelativePaths.contains(entry.relativePath)
     }
 
+    func libraryTree(for entries: [LibraryEntry]) -> LibraryTree {
+        Self.buildLibraryTree(from: entries)
+    }
+
+    func isLibraryFolderExpanded(_ relativePath: String) -> Bool {
+        expandedLibraryFolderPaths.contains(relativePath)
+    }
+
+    func setLibraryFolderExpanded(_ isExpanded: Bool, for relativePath: String) {
+        if isExpanded {
+            expandedLibraryFolderPaths.insert(relativePath)
+        } else {
+            expandedLibraryFolderPaths.remove(relativePath)
+        }
+        persistExpandedFolderPaths()
+    }
+
+    func isPlaylistExpanded(_ playlistID: UUID) -> Bool {
+        expandedPlaylistIDs.contains(playlistID)
+    }
+
+    func setPlaylistExpanded(_ isExpanded: Bool, for playlistID: UUID) {
+        if isExpanded {
+            expandedPlaylistIDs.insert(playlistID)
+        } else {
+            expandedPlaylistIDs.remove(playlistID)
+        }
+        persistExpandedPlaylistIDs()
+    }
+
+    @discardableResult
+    func createPlaylist(named name: String) -> Playlist? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let playlist = Playlist(
+            id: UUID(),
+            name: uniquePlaylistName(from: trimmed),
+            entryRelativePaths: []
+        )
+        playlists.append(playlist)
+        persistPlaylists()
+        return playlist
+    }
+
+    func deletePlaylist(_ playlist: Playlist) {
+        playlists.removeAll { $0.id == playlist.id }
+        expandedPlaylistIDs.remove(playlist.id)
+        persistPlaylists()
+        persistExpandedPlaylistIDs()
+    }
+
+    func playlistContains(_ entry: LibraryEntry, in playlist: Playlist) -> Bool {
+        playlist.entryRelativePaths.contains(entry.relativePath)
+    }
+
+    func addEntry(_ entry: LibraryEntry, toPlaylistID playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        guard playlists[index].entryRelativePaths.contains(entry.relativePath) == false else { return }
+        playlists[index].entryRelativePaths.append(entry.relativePath)
+        persistPlaylists()
+    }
+
+    func removeEntry(_ entry: LibraryEntry, fromPlaylistID playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[index].entryRelativePaths.removeAll { $0 == entry.relativePath }
+        persistPlaylists()
+    }
+
+    func entries(for playlist: Playlist) -> [LibraryEntry] {
+        let entriesByPath = Dictionary(uniqueKeysWithValues: libraryEntries.map { ($0.relativePath, $0) })
+        return playlist.entryRelativePaths.compactMap { entriesByPath[$0] }
+    }
+
     func loadGenerator(playImmediately: Bool = false) {
         loadedImportedFile = nil
         let source = GeneratorPulseSource(config: generatorConfig, displayName: "Generator")
@@ -365,10 +479,16 @@ final class AppModel: ObservableObject {
             libraryFolderName = LibraryDefaults.localFolderName
             libraryStatusMessage = "Stored inside Howl on this iPhone."
             loadFavoritesForCurrentLibrary()
+            loadPlaylists()
+            loadExpandedFolderPaths()
+            loadExpandedPlaylistIDs()
         } catch {
             lastError = error.localizedDescription
             libraryStatusMessage = "Could not prepare local library storage."
             favoriteLibraryRelativePaths = []
+            playlists = []
+            expandedLibraryFolderPaths = []
+            expandedPlaylistIDs = []
         }
     }
 
@@ -712,6 +832,135 @@ final class AppModel: ObservableObject {
             lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
         UserDefaults.standard.set(sortedFavorites, forKey: LibraryDefaults.favoritesKey)
+    }
+
+    private func loadPlaylists() {
+        guard let data = UserDefaults.standard.data(forKey: LibraryDefaults.playlistsKey) else {
+            playlists = []
+            return
+        }
+
+        do {
+            playlists = try JSONDecoder().decode([Playlist].self, from: data)
+        } catch {
+            playlists = []
+        }
+    }
+
+    private func persistPlaylists() {
+        do {
+            let data = try JSONEncoder().encode(playlists)
+            UserDefaults.standard.set(data, forKey: LibraryDefaults.playlistsKey)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func loadExpandedFolderPaths() {
+        let stored = UserDefaults.standard.array(forKey: LibraryDefaults.expandedFolderPathsKey) as? [String] ?? []
+        expandedLibraryFolderPaths = Set(stored)
+    }
+
+    private func persistExpandedFolderPaths() {
+        let sortedPaths = expandedLibraryFolderPaths.sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        UserDefaults.standard.set(sortedPaths, forKey: LibraryDefaults.expandedFolderPathsKey)
+    }
+
+    private func loadExpandedPlaylistIDs() {
+        let stored = UserDefaults.standard.array(forKey: LibraryDefaults.expandedPlaylistIDsKey) as? [String] ?? []
+        expandedPlaylistIDs = Set(stored.compactMap(UUID.init(uuidString:)))
+    }
+
+    private func persistExpandedPlaylistIDs() {
+        let values = expandedPlaylistIDs.map(\.uuidString).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+        UserDefaults.standard.set(values, forKey: LibraryDefaults.expandedPlaylistIDsKey)
+    }
+
+    private func uniquePlaylistName(from baseName: String) -> String {
+        guard playlists.contains(where: { $0.name.localizedCaseInsensitiveCompare(baseName) == .orderedSame }) else {
+            return baseName
+        }
+
+        for index in 2...10_000 {
+            let candidate = "\(baseName) \(index)"
+            if playlists.contains(where: { $0.name.localizedCaseInsensitiveCompare(candidate) == .orderedSame }) == false {
+                return candidate
+            }
+        }
+
+        return "\(baseName) \(UUID().uuidString.prefix(4))"
+    }
+
+    nonisolated private static func buildLibraryTree(from entries: [LibraryEntry]) -> LibraryTree {
+        final class MutableFolderNode {
+            let name: String
+            let relativePath: String
+            var folders: [String: MutableFolderNode] = [:]
+            var files: [LibraryEntry] = []
+
+            init(name: String, relativePath: String) {
+                self.name = name
+                self.relativePath = relativePath
+            }
+
+            func frozen() -> LibraryFolderNode {
+                LibraryFolderNode(
+                    name: name,
+                    relativePath: relativePath,
+                    folders: folders.values
+                        .map { $0.frozen() }
+                        .sorted { lhs, rhs in
+                            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                        },
+                    files: files.sorted { lhs, rhs in
+                        lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+                    }
+                )
+            }
+        }
+
+        let root = MutableFolderNode(name: "", relativePath: "")
+        var rootFiles: [LibraryEntry] = []
+
+        for entry in entries {
+            if entry.folderPathComponents.isEmpty {
+                rootFiles.append(entry)
+                continue
+            }
+
+            var currentNode = root
+            var currentPathComponents: [String] = []
+
+            for component in entry.folderPathComponents {
+                currentPathComponents.append(component)
+                let node = currentNode.folders[component] ?? {
+                    let created = MutableFolderNode(
+                        name: component,
+                        relativePath: currentPathComponents.joined(separator: "/")
+                    )
+                    currentNode.folders[component] = created
+                    return created
+                }()
+                currentNode = node
+            }
+
+            currentNode.files.append(entry)
+        }
+
+        return LibraryTree(
+            rootFiles: rootFiles.sorted { lhs, rhs in
+                lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+            },
+            folders: root.folders.values
+                .map { $0.frozen() }
+                .sorted { lhs, rhs in
+                    lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+        )
     }
 
     private func startPlaybackLoop() {

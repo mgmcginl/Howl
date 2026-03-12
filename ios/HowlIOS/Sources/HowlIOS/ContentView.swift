@@ -37,6 +37,9 @@ private struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLibraryImporter = false
     @State private var searchText = ""
+    @State private var showCreatePlaylistAlert = false
+    @State private var newPlaylistName = ""
+    @State private var pendingPlaylistEntry: AppModel.LibraryEntry?
 
     private var filteredEntries: [AppModel.LibraryEntry] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,18 +54,16 @@ private struct LibraryView: View {
         filteredEntries.filter { model.isFavorite($0) }.sorted(by: librarySort)
     }
 
-    private var groupedEntries: [(name: String, entries: [AppModel.LibraryEntry])] {
-        let nonFavoriteEntries = filteredEntries.filter { !model.isFavorite($0) }
-        let grouped = Dictionary(grouping: nonFavoriteEntries) { $0.topLevelGroupName }
-        return grouped
-            .map { key, value in
-                (name: key, entries: value.sorted(by: librarySort))
-            }
-            .sorted {
-                if $0.name == "Root Files" { return true }
-                if $1.name == "Root Files" { return false }
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
+    private var nonFavoriteEntries: [AppModel.LibraryEntry] {
+        filteredEntries.filter { !model.isFavorite($0) }
+    }
+
+    private var libraryTree: AppModel.LibraryTree {
+        model.libraryTree(for: nonFavoriteEntries)
+    }
+
+    private var isSearching: Bool {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     var body: some View {
@@ -91,6 +92,13 @@ private struct LibraryView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
+                    Button("New Playlist") {
+                        pendingPlaylistEntry = nil
+                        newPlaylistName = ""
+                        showCreatePlaylistAlert = true
+                    }
+                    .buttonStyle(.bordered)
+
                     if !model.libraryEntries.isEmpty {
                         Button("Refresh Library") {
                             model.refreshLibrary()
@@ -110,15 +118,47 @@ private struct LibraryView: View {
                     if !favoriteEntries.isEmpty {
                         Section("Favorites (\(favoriteEntries.count))") {
                             ForEach(favoriteEntries) { entry in
-                                LibraryEntryRow(entry: entry)
+                                LibraryEntryRow(entry: entry, currentPlaylistID: nil) {
+                                    beginCreatePlaylist(with: $0)
+                                }
                             }
                         }
                     }
 
-                    ForEach(groupedEntries, id: \.name) { group in
-                        Section("\(group.name) (\(group.entries.count))") {
-                            ForEach(group.entries) { entry in
-                                LibraryEntryRow(entry: entry)
+                    if !isSearching && !model.playlists.isEmpty {
+                        Section("Playlists (\(model.playlists.count))") {
+                            ForEach(model.playlists) { playlist in
+                                PlaylistDisclosureRow(playlist: playlist) {
+                                    beginCreatePlaylist(with: $0)
+                                }
+                            }
+                        }
+                    }
+
+                    if isSearching {
+                        Section("Search Results (\(nonFavoriteEntries.count))") {
+                            ForEach(nonFavoriteEntries.sorted(by: librarySort)) { entry in
+                                LibraryEntryRow(entry: entry, currentPlaylistID: nil) {
+                                    beginCreatePlaylist(with: $0)
+                                }
+                            }
+                        }
+                    } else {
+                        if !libraryTree.rootFiles.isEmpty {
+                            Section("Root Files (\(libraryTree.rootFiles.count))") {
+                                ForEach(libraryTree.rootFiles) { entry in
+                                    LibraryEntryRow(entry: entry, currentPlaylistID: nil) {
+                                        beginCreatePlaylist(with: $0)
+                                    }
+                                }
+                            }
+                        }
+
+                        ForEach(libraryTree.folders) { folder in
+                            Section {
+                                LibraryFolderDisclosureRow(folder: folder) {
+                                    beginCreatePlaylist(with: $0)
+                                }
                             }
                         }
                     }
@@ -126,6 +166,23 @@ private struct LibraryView: View {
             }
             .navigationTitle("Library")
             .searchable(text: $searchText, prompt: "Search files")
+            .alert("New Playlist", isPresented: $showCreatePlaylistAlert) {
+                TextField("Playlist name", text: $newPlaylistName)
+                Button("Cancel", role: .cancel) {
+                    pendingPlaylistEntry = nil
+                }
+                Button("Create") {
+                    guard let playlist = model.createPlaylist(named: newPlaylistName) else { return }
+                    model.setPlaylistExpanded(true, for: playlist.id)
+                    if let entry = pendingPlaylistEntry {
+                        model.addEntry(entry, toPlaylistID: playlist.id)
+                    }
+                    pendingPlaylistEntry = nil
+                    newPlaylistName = ""
+                }
+            } message: {
+                Text("Playlists are saved collections inside Howl.")
+            }
             .sheet(isPresented: $showLibraryImporter) {
                 ScriptPickerSheet(
                     allowsMultipleSelection: true,
@@ -144,8 +201,92 @@ private struct LibraryView: View {
         }
     }
 
+    private func beginCreatePlaylist(with entry: AppModel.LibraryEntry?) {
+        pendingPlaylistEntry = entry
+        newPlaylistName = ""
+        showCreatePlaylistAlert = true
+    }
+
     private func librarySort(lhs: AppModel.LibraryEntry, rhs: AppModel.LibraryEntry) -> Bool {
         lhs.relativePath.localizedCaseInsensitiveCompare(rhs.relativePath) == .orderedAscending
+    }
+}
+
+private struct PlaylistDisclosureRow: View {
+    @EnvironmentObject private var model: AppModel
+    let playlist: AppModel.Playlist
+    let onCreatePlaylist: (AppModel.LibraryEntry) -> Void
+
+    private var entries: [AppModel.LibraryEntry] {
+        model.entries(for: playlist)
+    }
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { model.isPlaylistExpanded(playlist.id) },
+                set: { model.setPlaylistExpanded($0, for: playlist.id) }
+            )
+        ) {
+            if entries.isEmpty {
+                Text("No imported files in this playlist yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(entries) { entry in
+                    LibraryEntryRow(entry: entry, currentPlaylistID: playlist.id, onCreatePlaylist: onCreatePlaylist)
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "music.note.list")
+                    .foregroundStyle(.secondary)
+                Text(playlist.name)
+                Spacer()
+                Text("\(entries.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .contextMenu {
+            Button("Delete Playlist", role: .destructive) {
+                model.deletePlaylist(playlist)
+            }
+        }
+    }
+}
+
+private struct LibraryFolderDisclosureRow: View {
+    @EnvironmentObject private var model: AppModel
+    let folder: AppModel.LibraryFolderNode
+    let onCreatePlaylist: (AppModel.LibraryEntry) -> Void
+
+    var body: some View {
+        DisclosureGroup(
+            isExpanded: Binding(
+                get: { model.isLibraryFolderExpanded(folder.relativePath) },
+                set: { model.setLibraryFolderExpanded($0, for: folder.relativePath) }
+            )
+        ) {
+            ForEach(folder.files) { entry in
+                LibraryEntryRow(entry: entry, currentPlaylistID: nil, onCreatePlaylist: onCreatePlaylist)
+            }
+
+            ForEach(folder.folders) { childFolder in
+                LibraryFolderDisclosureRow(folder: childFolder, onCreatePlaylist: onCreatePlaylist)
+                    .padding(.leading, 8)
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "folder")
+                    .foregroundStyle(.secondary)
+                Text(folder.name)
+                Spacer()
+                Text("\(folder.totalFileCount)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -199,6 +340,8 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
 private struct LibraryEntryRow: View {
     @EnvironmentObject private var model: AppModel
     let entry: AppModel.LibraryEntry
+    let currentPlaylistID: UUID?
+    let onCreatePlaylist: (AppModel.LibraryEntry) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -222,6 +365,43 @@ private struct LibraryEntryRow: View {
             } label: {
                 Image(systemName: model.isFavorite(entry) ? "star.fill" : "star")
                     .foregroundStyle(model.isFavorite(entry) ? .yellow : .secondary)
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button {
+                    onCreatePlaylist(entry)
+                } label: {
+                    Label("New Playlist", systemImage: "plus.rectangle.on.folder")
+                }
+
+                ForEach(model.playlists) { playlist in
+                    if model.playlistContains(entry, in: playlist) {
+                        Button {
+                            model.removeEntry(entry, fromPlaylistID: playlist.id)
+                        } label: {
+                            Label("Remove from \(playlist.name)", systemImage: "minus.circle")
+                        }
+                    } else {
+                        Button {
+                            model.addEntry(entry, toPlaylistID: playlist.id)
+                            model.setPlaylistExpanded(true, for: playlist.id)
+                        } label: {
+                            Label("Add to \(playlist.name)", systemImage: "text.badge.plus")
+                        }
+                    }
+                }
+
+                if let currentPlaylistID {
+                    Button(role: .destructive) {
+                        model.removeEntry(entry, fromPlaylistID: currentPlaylistID)
+                    } label: {
+                        Label("Remove from This Playlist", systemImage: "trash")
+                    }
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
         }
