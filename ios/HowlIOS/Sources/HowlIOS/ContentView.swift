@@ -200,6 +200,61 @@ private struct FolderPickerSheet: UIViewControllerRepresentable {
     }
 }
 
+private struct ScriptPickerSheet: UIViewControllerRepresentable {
+    let onComplete: (Result<URL, Error>) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.howlHWL, .howlFunscript, .json, .data],
+            asCopy: true
+        )
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onComplete: (Result<URL, Error>) -> Void
+
+        init(onComplete: @escaping (Result<URL, Error>) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else {
+                onComplete(.failure(ScriptPickerError.noFileSelected))
+                return
+            }
+
+            onComplete(.success(url))
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onComplete(.failure(ScriptPickerError.cancelled))
+        }
+    }
+
+    private enum ScriptPickerError: LocalizedError {
+        case noFileSelected
+        case cancelled
+
+        var errorDescription: String? {
+            switch self {
+            case .noFileSelected:
+                return "No file was selected."
+            case .cancelled:
+                return nil
+            }
+        }
+    }
+}
+
 private struct LibraryEntryRow: View {
     @EnvironmentObject private var model: AppModel
     let entry: AppModel.LibraryEntry
@@ -332,15 +387,16 @@ private struct PlayerView: View {
                 .padding(20)
             }
             .navigationTitle("Howl")
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.howlHWL, .howlFunscript, .json, .data]
-            ) { result in
-                switch result {
-                case .success(let url):
-                    model.importFile(from: url)
-                case .failure(let error):
-                    model.lastError = error.localizedDescription
+            .sheet(isPresented: $showImporter) {
+                ScriptPickerSheet { result in
+                    switch result {
+                    case .success(let url):
+                        model.importFile(from: url)
+                    case .failure(let error):
+                        if error.localizedDescription.isEmpty == false {
+                            model.lastError = error.localizedDescription
+                        }
+                    }
                 }
             }
         }
