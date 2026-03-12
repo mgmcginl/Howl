@@ -6,6 +6,7 @@ What is here now:
 - A generator-based Xcode project (`project.yml`) for XcodeGen.
 - A reusable `HowlCore` framework for HWL parsing, funscript playback, generator logic, and Coyote packet encoding.
 - A SwiftUI app shell with player, generator, activity presets, settings, and BLE discovery scaffolding.
+- A GitHub Actions macOS build workflow that can compile the iOS app without you owning a Mac.
 
 What is intentionally not finished yet:
 - Verified BLE write/notify handshake for Coyote 2 or Coyote 3 on real hardware.
