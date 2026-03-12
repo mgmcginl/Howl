@@ -356,9 +356,20 @@ private struct LibraryEntryRow: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
+
+                if model.isLoadedLibraryEntry(entry) {
+                    Text("Loaded")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
             }
 
             Spacer()
+
+            if model.isLoadedLibraryEntry(entry) {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(Color.accentColor)
+            }
 
             Button {
                 model.toggleFavorite(for: entry)
@@ -406,16 +417,16 @@ private struct LibraryEntryRow: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 2)
+        .listRowBackground(model.isLoadedLibraryEntry(entry) ? Color.accentColor.opacity(0.12) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture {
-            model.loadLibraryEntry(entry)
+            model.loadLibraryEntry(entry, playlistID: currentPlaylistID)
         }
     }
 }
 
 private struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showImporter = false
 
     var body: some View {
         NavigationStack {
@@ -430,6 +441,11 @@ private struct PlayerView: View {
                         Text("Output: \(model.outputMode.rawValue)")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.tertiary)
+                        if let playlistName = model.currentPlaylistName {
+                            Text("Playlist: \(playlistName)")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color.accentColor)
+                        }
                     }
 
                     if let duration = model.duration {
@@ -452,15 +468,10 @@ private struct PlayerView: View {
                     }
 
                     HStack(spacing: 12) {
-                        Button("Import File") {
-                            showImporter = true
-                        }
-                        .buttonStyle(.borderedProminent)
-
                         Button(model.isPlaying ? "Stop" : "Play") {
                             model.togglePlayback()
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
 
                         Button("Use Generator") {
                             model.loadGenerator(playImmediately: true)
@@ -508,22 +519,6 @@ private struct PlayerView: View {
                 .padding(20)
             }
             .navigationTitle("Howl")
-            .sheet(isPresented: $showImporter) {
-                ScriptPickerSheet(
-                    allowsMultipleSelection: false,
-                    contentTypes: [.howlHWL, .howlFunscript, .json, .data]
-                ) { result in
-                    switch result {
-                    case .success(let urls):
-                        guard let url = urls.first else { return }
-                        model.importFile(from: url)
-                    case .failure(let error):
-                        if error.localizedDescription.isEmpty == false {
-                            model.lastError = error.localizedDescription
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -791,6 +786,16 @@ private struct SettingsView: View {
                 }
 
                 Section("Frequency Range") {
+                    Picker("Preset", selection: $model.frequencyRangePreset) {
+                        ForEach(FrequencyRangePreset.allCases) { preset in
+                            Text(preset.rawValue).tag(preset)
+                        }
+                    }
+
+                    Text(model.frequencyRangePreset.detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
                     LabeledSlider(
                         title: "Minimum",
                         value: $model.minFrequency,

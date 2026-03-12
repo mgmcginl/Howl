@@ -10,6 +10,25 @@ enum OutputMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum FrequencyRangePreset: String, CaseIterable, Identifiable {
+    case faithful = "Faithful"
+    case comfort = "Comfort"
+    case custom = "Custom"
+
+    var id: String { rawValue }
+
+    var detail: String {
+        switch self {
+        case .faithful:
+            return "Wider range that keeps more of the file's original frequency motion."
+        case .comfort:
+            return "Narrower range that softens the highs and reduces contrast."
+        case .custom:
+            return "Your manual min/max range."
+        }
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     private struct ImportedFile {
@@ -97,8 +116,29 @@ final class AppModel: ObservableObject {
             syncBleLimits()
         }
     }
-    @Published var minFrequency = 10.0
-    @Published var maxFrequency = 100.0
+    @Published var minFrequency = 10.0 {
+        didSet {
+            guard isAdjustingFrequencyRange == false else { return }
+            if minFrequency > maxFrequency {
+                maxFrequency = minFrequency
+            }
+            syncFrequencyRangePreset()
+        }
+    }
+    @Published var maxFrequency = 100.0 {
+        didSet {
+            guard isAdjustingFrequencyRange == false else { return }
+            if maxFrequency < minFrequency {
+                minFrequency = maxFrequency
+            }
+            syncFrequencyRangePreset()
+        }
+    }
+    @Published var frequencyRangePreset: FrequencyRangePreset = .faithful {
+        didSet {
+            applyFrequencyRangePresetIfNeeded()
+        }
+    }
     @Published var outputMode: OutputMode = .preview {
         didSet {
             handleOutputModeChanged(from: oldValue)
@@ -119,6 +159,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var playlists: [Playlist] = []
     @Published private(set) var expandedLibraryFolderPaths: Set<String> = []
     @Published private(set) var expandedPlaylistIDs: Set<UUID> = []
+    @Published private(set) var loadedLibraryRelativePath: String?
+    @Published private(set) var currentPlaylistID: UUID?
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
 
@@ -135,6 +177,7 @@ final class AppModel: ObservableObject {
     private var playbackTickIndex = 0
     private var libraryRefreshTask: Task<Void, Never>?
     private var activeLibraryRefreshID: UUID?
+    private var isAdjustingFrequencyRange = false
 
     init() {
         syncBleLimits()
@@ -146,7 +189,8 @@ final class AppModel: ObservableObject {
         WaveShape.generatorLibrary.map(\.name)
     }
 
-    func importFile(from url: URL) {
+    @discardableResult
+    func importFile(from url: URL) -> Bool {
         let didStartAccess = url.startAccessingSecurityScopedResource()
         defer {
             if didStartAccess {
@@ -168,16 +212,19 @@ final class AppModel: ObservableObject {
                 )
                 loadedImportedFile = importedFile
                 load(source: source)
+                return true
             case "funscript", "json":
                 let source = try FunscriptPulseSource(data: data, displayName: importedFile.displayName)
                 loadedImportedFile = importedFile
                 load(source: source)
+                return true
             default:
                 throw HowlCoreError.unsupportedFileType(ext)
             }
         } catch {
             lastError = error.localizedDescription
             statusMessage = "Could not load \(url.lastPathComponent)."
+            return false
         }
     }
 
@@ -289,8 +336,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadLibraryEntry(_ entry: LibraryEntry) {
-        importFile(from: entry.url)
+    func loadLibraryEntry(_ entry: LibraryEntry, playlistID: UUID? = nil) {
+        guard importFile(from: entry.url) else { return }
+        loadedLibraryRelativePath = entry.relativePath
+        currentPlaylistID = playlistID
     }
 
     func toggleFavorite(for entry: LibraryEntry) {
@@ -304,6 +353,10 @@ final class AppModel: ObservableObject {
 
     func isFavorite(_ entry: LibraryEntry) -> Bool {
         favoriteLibraryRelativePaths.contains(entry.relativePath)
+    }
+
+    func isLoadedLibraryEntry(_ entry: LibraryEntry) -> Bool {
+        loadedLibraryRelativePath == entry.relativePath
     }
 
     func libraryTree(for entries: [LibraryEntry]) -> LibraryTree {
@@ -380,8 +433,15 @@ final class AppModel: ObservableObject {
         return playlist.entryRelativePaths.compactMap { entriesByPath[$0] }
     }
 
+    var currentPlaylistName: String? {
+        guard let currentPlaylistID else { return nil }
+        return playlists.first(where: { $0.id == currentPlaylistID })?.name
+    }
+
     func loadGenerator(playImmediately: Bool = false) {
         loadedImportedFile = nil
+        loadedLibraryRelativePath = nil
+        currentPlaylistID = nil
         let source = GeneratorPulseSource(config: generatorConfig, displayName: "Generator")
         load(source: source)
         if playImmediately {
@@ -393,6 +453,8 @@ final class AppModel: ObservableObject {
         selectedActivity = activity
         generatorConfig = activity.generatorConfig
         loadedImportedFile = nil
+        loadedLibraryRelativePath = nil
+        currentPlaylistID = nil
         let source = GeneratorPulseSource(config: activity.generatorConfig, displayName: activity.rawValue)
         load(source: source)
         if playImmediately {
@@ -771,10 +833,21 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func archivePathComponents(for entryPath: String) -> [String] {
-        entryPath
+        var components = entryPath
+            .replacingOccurrences(of: "\\", with: "/")
             .split(separator: "/")
             .map(String.init)
             .filter { $0.isEmpty == false && $0 != "." && $0 != ".." }
+
+        if let first = components.first, first.hasSuffix(":") {
+            components.removeFirst()
+        }
+
+        if components.count > 2, components.first?.localizedCaseInsensitiveCompare("private") == .orderedSame {
+            components.removeFirst()
+        }
+
+        return components
     }
 
     nonisolated private static func uniqueDestinationURL(directory: URL, preferredName: String) -> URL {
@@ -893,6 +966,46 @@ final class AppModel: ObservableObject {
         }
 
         return "\(baseName) \(UUID().uuidString.prefix(4))"
+    }
+
+    private func applyFrequencyRangePresetIfNeeded() {
+        guard isAdjustingFrequencyRange == false else { return }
+        guard frequencyRangePreset != .custom else { return }
+
+        let range = Self.rangeValues(for: frequencyRangePreset)
+        isAdjustingFrequencyRange = true
+        minFrequency = range.min
+        maxFrequency = range.max
+        isAdjustingFrequencyRange = false
+    }
+
+    private func syncFrequencyRangePreset() {
+        let faithful = Self.rangeValues(for: .faithful)
+        let comfort = Self.rangeValues(for: .comfort)
+
+        let nextPreset: FrequencyRangePreset
+        if minFrequency == faithful.min && maxFrequency == faithful.max {
+            nextPreset = .faithful
+        } else if minFrequency == comfort.min && maxFrequency == comfort.max {
+            nextPreset = .comfort
+        } else {
+            nextPreset = .custom
+        }
+
+        if frequencyRangePreset != nextPreset {
+            frequencyRangePreset = nextPreset
+        }
+    }
+
+    private static func rangeValues(for preset: FrequencyRangePreset) -> (min: Double, max: Double) {
+        switch preset {
+        case .faithful:
+            return (min: 10, max: 100)
+        case .comfort:
+            return (min: 18, max: 72)
+        case .custom:
+            return (min: 10, max: 100)
+        }
     }
 
     nonisolated private static func buildLibraryTree(from entries: [LibraryEntry]) -> LibraryTree {
