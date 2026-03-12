@@ -24,6 +24,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private let engine = AVAudioEngine()
     private let stateLock = NSLock()
     private lazy var sourceNode = makeSourceNode()
+    private let renderFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
 
     override init() {
         super.init()
@@ -56,6 +57,13 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 mode: .default,
                 options: [.allowAirPlay, .allowBluetoothA2DP]
             )
+        } catch {
+            lastError = "Audio session category failed: \(error.localizedDescription)"
+            statusSummary = "Audio output failed"
+            return
+        }
+
+        do {
             try session.setActive(true)
             updateRouteSummary()
             updateState(
@@ -76,7 +84,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             statusSummary = "Audio output active"
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            lastError = "Audio engine start failed: \(error.localizedDescription)"
             statusSummary = "Audio output failed"
         }
     }
@@ -108,15 +116,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private var playbackState = PlaybackState()
 
     private func configureEngine() {
-        let outputFormat = engine.outputNode.outputFormat(forBus: 0)
-        let preferredFormat = AVAudioFormat(
-            standardFormatWithSampleRate: max(outputFormat.sampleRate, 44_100),
-            channels: 2
-        )!
-
         engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: preferredFormat)
-        engine.connect(engine.mainMixerNode, to: engine.outputNode, format: preferredFormat)
+        engine.connect(sourceNode, to: engine.mainMixerNode, format: renderFormat)
         engine.prepare()
     }
 
@@ -136,7 +137,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             ? ablPointer[1].mData?.assumingMemoryBound(to: Float.self)
             : nil
 
-        let sampleRate = max(engine.outputNode.outputFormat(forBus: 0).sampleRate, 44_100)
+        let sampleRate = renderFormat.sampleRate
         let twoPi = Double.pi * 2
 
         stateLock.lock()
