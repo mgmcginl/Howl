@@ -94,6 +94,7 @@ final class AppModel: ObservableObject {
     private var libraryFolderURL: URL?
     private var libraryFolderAccessIsActive = false
     private var libraryRefreshTask: Task<Void, Never>?
+    private var activeLibraryRefreshID: UUID?
 
     init() {
         syncBleLimits()
@@ -114,20 +115,21 @@ final class AppModel: ObservableObject {
 
         do {
             lastError = nil
-            let data = try Data(contentsOf: url)
-            let ext = url.pathExtension.lowercased()
+            let importedFile = try Self.readImportedFile(from: url)
+            let data = importedFile.data
+            let ext = importedFile.ext
             switch ext {
             case "hwl":
                 let source = try HWLPulseSource(
                     data: data,
-                    displayName: url.lastPathComponent,
+                    displayName: importedFile.displayName,
                     settings: HWLSettings(profile: hwlPlaybackProfile)
                 )
-                loadedImportedFile = ImportedFile(data: data, displayName: url.lastPathComponent, ext: ext)
+                loadedImportedFile = importedFile
                 load(source: source)
             case "funscript", "json":
-                let source = try FunscriptPulseSource(data: data, displayName: url.lastPathComponent)
-                loadedImportedFile = ImportedFile(data: data, displayName: url.lastPathComponent, ext: ext)
+                let source = try FunscriptPulseSource(data: data, displayName: importedFile.displayName)
+                loadedImportedFile = importedFile
                 load(source: source)
             default:
                 throw HowlCoreError.unsupportedFileType(ext)
@@ -165,6 +167,7 @@ final class AppModel: ObservableObject {
     func refreshLibrary() {
         guard let libraryFolderURL else {
             libraryRefreshTask?.cancel()
+            activeLibraryRefreshID = nil
             isRefreshingLibrary = false
             libraryEntries = []
             libraryFolderName = "No library folder selected"
@@ -177,20 +180,31 @@ final class AppModel: ObservableObject {
         lastError = nil
         let folderURL = libraryFolderURL
         let folderName = libraryFolderURL.lastPathComponent
+        let refreshID = UUID()
+        activeLibraryRefreshID = refreshID
         libraryStatusMessage = "Indexing \(folderName)..."
 
         libraryRefreshTask = Task { [weak self] in
             guard let self else { return }
             defer {
-                self.isRefreshingLibrary = false
+                if self.activeLibraryRefreshID == refreshID {
+                    self.isRefreshingLibrary = false
+                }
             }
 
             do {
-                let entries = try await Task.detached(priority: .userInitiated) {
+                let scanTask = Task.detached(priority: .userInitiated) {
                     try Self.loadLibraryEntries(from: folderURL)
-                }.value
+                }
+
+                let entries = try await withTaskCancellationHandler {
+                    try await scanTask.value
+                } onCancel: {
+                    scanTask.cancel()
+                }
 
                 guard !Task.isCancelled else { return }
+                guard self.activeLibraryRefreshID == refreshID else { return }
 
                 self.libraryEntries = entries.sorted {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
@@ -202,6 +216,7 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
+                guard self.activeLibraryRefreshID == refreshID else { return }
                 self.lastError = error.localizedDescription
                 self.libraryEntries = []
                 self.libraryStatusMessage = "Could not read \(folderName)."
@@ -357,6 +372,8 @@ final class AppModel: ObservableObject {
 
     private func releaseLibraryFolderAccess() {
         guard libraryFolderAccessIsActive, let libraryFolderURL else { return }
+        libraryRefreshTask?.cancel()
+        activeLibraryRefreshID = nil
         libraryFolderURL.stopAccessingSecurityScopedResource()
         libraryFolderAccessIsActive = false
     }
@@ -387,6 +404,8 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated private static func scanLibraryDirectory(at directoryURL: URL, baseURL: URL) throws -> [LibraryEntry] {
+        try Task.checkCancellation()
+
         let resourceKeys: Set<URLResourceKey> = [
             .isRegularFileKey,
             .isDirectoryKey,
@@ -402,6 +421,7 @@ final class AppModel: ObservableObject {
         var entries: [LibraryEntry] = []
 
         for childURL in childURLs {
+            try Task.checkCancellation()
             let values = try childURL.resourceValues(forKeys: resourceKeys)
 
             if values.isDirectory == true {
@@ -430,6 +450,34 @@ final class AppModel: ObservableObject {
         }
 
         return entries
+    }
+
+    nonisolated private static func readImportedFile(from url: URL) throws -> ImportedFile {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var readError: Error?
+        var fileData = Data()
+        var displayName = url.lastPathComponent
+        let ext = url.pathExtension.lowercased()
+
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                displayName = coordinatedURL.lastPathComponent
+                fileData = try Data(contentsOf: coordinatedURL)
+            } catch {
+                readError = error
+            }
+        }
+
+        if let coordinationError {
+            throw coordinationError
+        }
+
+        if let readError {
+            throw readError
+        }
+
+        return ImportedFile(data: fileData, displayName: displayName, ext: ext)
     }
 
     private func currentFavoritesDefaultsKey() -> String? {
