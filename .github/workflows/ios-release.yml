@@ -235,6 +235,46 @@ jobs:
 
           echo "path=$IPA_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Restamp exported IPA version
+        shell: bash
+        env:
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.build_number.outputs.value }}
+          KEYCHAIN_PATH: ${{ steps.signing.outputs.keychain_path }}
+          IPA_PATH: ${{ steps.ipa.outputs.path }}
+        run: |
+          set -euo pipefail
+
+          RESTAMP_DIR="$RUNNER_TEMP/restamped-ipa"
+          ZIP_PATH="$RUNNER_TEMP/restamped.zip"
+          rm -rf "$RESTAMP_DIR" "$ZIP_PATH"
+          mkdir -p "$RESTAMP_DIR"
+
+          cp "$IPA_PATH" "$ZIP_PATH"
+          unzip -q "$ZIP_PATH" -d "$RESTAMP_DIR"
+
+          APP_PATH="$RESTAMP_DIR/Payload/HowlIOS.app"
+          APP_INFO_PLIST="$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_INFO_PLIST"
+
+          /usr/bin/codesign \
+            --force \
+            --sign "Apple Distribution" \
+            --keychain "$KEYCHAIN_PATH" \
+            --preserve-metadata=entitlements \
+            "$APP_PATH"
+
+          /usr/bin/codesign --verify --deep --strict "$APP_PATH"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_INFO_PLIST"
+
+          rm -f "$IPA_PATH"
+          (
+            cd "$RESTAMP_DIR"
+            /usr/bin/zip -qry "$IPA_PATH" Payload Symbols
+          )
+
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
