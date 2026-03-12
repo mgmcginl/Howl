@@ -29,6 +29,7 @@ open HowlIOS.xcodeproj
 - Play them through a Swift-native timing loop at 40 pulses/sec.
 - Preview real-time pulse values and recent pulse history.
 - Build generator-driven output and a few activity-like presets.
+- Re-render HWL files through selectable `Faithful`, `Smooth`, and `Softened` playback profiles.
 - Discover a Coyote 3, subscribe to its notify channel, sync parameters, poll battery, and send Android-shaped 4-pulse live packets.
 - Inspect the current preview packet, last transmitted packet, notify summaries, device-echoed power, and BLE backpressure counts during testing.
 

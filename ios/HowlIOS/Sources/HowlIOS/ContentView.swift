@@ -291,6 +291,18 @@ private struct SettingsView: View {
                     }
                 }
 
+                Section("HWL Playback") {
+                    Picker("Profile", selection: $model.hwlPlaybackProfile) {
+                        ForEach(HWLPlaybackProfile.allCases) { profile in
+                            Text(profile.rawValue).tag(profile)
+                        }
+                    }
+
+                    Text(model.hwlPlaybackProfile.detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("BLE") {
                     LabeledContent("State", value: bleManager.state.rawValue)
                     LabeledContent("Last Seen", value: bleManager.lastSeenDeviceName)

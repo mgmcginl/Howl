@@ -12,6 +12,12 @@ enum OutputMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    private struct ImportedFile {
+        let data: Data
+        let displayName: String
+        let ext: String
+    }
+
     @Published var sourceName = "No source loaded"
     @Published var duration: TimeInterval?
     @Published var position: TimeInterval = 0
@@ -37,12 +43,18 @@ final class AppModel: ObservableObject {
     }
     @Published var generatorConfig: GeneratorConfig = .default
     @Published var selectedActivity: DemoActivity = .tease
+    @Published var hwlPlaybackProfile: HWLPlaybackProfile = .smooth {
+        didSet {
+            reloadCurrentHWLIfNeeded()
+        }
+    }
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
 
     let bleManager = CoyoteBluetoothManager()
 
     private var loadedSource: (any PulseSource)?
+    private var loadedImportedFile: ImportedFile?
     private var playbackTask: Task<Void, Never>?
     private var previousPowerA: Int?
     private var previousPowerB: Int?
@@ -72,10 +84,16 @@ final class AppModel: ObservableObject {
             let ext = url.pathExtension.lowercased()
             switch ext {
             case "hwl":
-                let source = try HWLPulseSource(data: data, displayName: url.lastPathComponent)
+                let source = try HWLPulseSource(
+                    data: data,
+                    displayName: url.lastPathComponent,
+                    settings: HWLSettings(profile: hwlPlaybackProfile)
+                )
+                loadedImportedFile = ImportedFile(data: data, displayName: url.lastPathComponent, ext: ext)
                 load(source: source)
             case "funscript", "json":
                 let source = try FunscriptPulseSource(data: data, displayName: url.lastPathComponent)
+                loadedImportedFile = ImportedFile(data: data, displayName: url.lastPathComponent, ext: ext)
                 load(source: source)
             default:
                 throw HowlCoreError.unsupportedFileType(ext)
@@ -87,6 +105,7 @@ final class AppModel: ObservableObject {
     }
 
     func loadGenerator(playImmediately: Bool = false) {
+        loadedImportedFile = nil
         let source = GeneratorPulseSource(config: generatorConfig, displayName: "Generator")
         load(source: source)
         if playImmediately {
@@ -97,6 +116,7 @@ final class AppModel: ObservableObject {
     func loadActivity(_ activity: DemoActivity, playImmediately: Bool = true) {
         selectedActivity = activity
         generatorConfig = activity.generatorConfig
+        loadedImportedFile = nil
         let source = GeneratorPulseSource(config: activity.generatorConfig, displayName: activity.rawValue)
         load(source: source)
         if playImmediately {
@@ -251,6 +271,30 @@ final class AppModel: ObservableObject {
 
     private func syncBleLimits() {
         bleManager.updateDesiredLimits(limitA: powerA, limitB: powerB)
+    }
+
+    private func reloadCurrentHWLIfNeeded() {
+        guard let importedFile = loadedImportedFile, importedFile.ext == "hwl" else { return }
+
+        let wasPlaying = isPlaying
+        let preservedPosition = position
+
+        do {
+            let source = try HWLPulseSource(
+                data: importedFile.data,
+                displayName: importedFile.displayName,
+                settings: HWLSettings(profile: hwlPlaybackProfile)
+            )
+            load(source: source)
+            let targetPosition = min(preservedPosition, source.duration ?? preservedPosition)
+            seek(to: targetPosition)
+            statusMessage = "Loaded \(source.displayName) with \(hwlPlaybackProfile.rawValue.lowercased()) HWL playback."
+            if wasPlaying {
+                play()
+            }
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     private func applyOutput(for _: Pulse, source: any PulseSource, at time: TimeInterval, transmit: Bool) {
