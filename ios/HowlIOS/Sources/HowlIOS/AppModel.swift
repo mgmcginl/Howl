@@ -37,9 +37,9 @@ final class AppModel: ObservableObject {
     }
 
     private enum LibraryDefaults {
-        static let bookmarkKey = "Howl.LibraryFolderBookmark"
         static let supportedExtensions = Set(["hwl", "funscript"])
-        static let favoritesKeyPrefix = "Howl.LibraryFavorites."
+        static let favoritesKey = "Howl.LibraryFavorites.Local"
+        static let localFolderName = "Imported Scripts"
     }
 
     @Published var sourceName = "No source loaded"
@@ -72,8 +72,8 @@ final class AppModel: ObservableObject {
             reloadCurrentHWLIfNeeded()
         }
     }
-    @Published var libraryFolderName = "No library folder selected"
-    @Published var libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+    @Published var libraryFolderName = LibraryDefaults.localFolderName
+    @Published var libraryStatusMessage = "Stored inside Howl on this iPhone."
     @Published var libraryEntries: [LibraryEntry] = []
     @Published var isRefreshingLibrary = false
     @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
@@ -91,14 +91,13 @@ final class AppModel: ObservableObject {
     private let outputBatchSize = Coyote3Protocol.pulseBatchSize
     private let maxHistoryPoints = 36
     private var playbackTickIndex = 0
-    private var libraryFolderURL: URL?
-    private var libraryFolderAccessIsActive = false
     private var libraryRefreshTask: Task<Void, Never>?
     private var activeLibraryRefreshID: UUID?
 
     init() {
         syncBleLimits()
-        restoreLibraryFolderIfAvailable()
+        prepareLocalLibrary()
+        refreshLibrary()
     }
 
     var shapeNames: [String] {
@@ -140,46 +139,67 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func chooseLibraryFolder(from url: URL) {
-        let didStartAccess = url.startAccessingSecurityScopedResource()
-
-        do {
-            lastError = nil
-            let bookmark = try url.bookmarkData()
-            UserDefaults.standard.set(bookmark, forKey: LibraryDefaults.bookmarkKey)
-
-            releaseLibraryFolderAccess()
-            libraryFolderURL = url
-            libraryFolderAccessIsActive = didStartAccess
-            libraryFolderName = url.lastPathComponent
-            libraryStatusMessage = "Indexing \(url.lastPathComponent)..."
-            loadFavoritesForCurrentLibrary()
-            refreshLibrary()
-        } catch {
-            if didStartAccess {
-                url.stopAccessingSecurityScopedResource()
-            }
-            lastError = error.localizedDescription
-            libraryStatusMessage = "Could not remember that folder."
-        }
-    }
-
-    func refreshLibrary() {
-        guard let libraryFolderURL else {
-            libraryRefreshTask?.cancel()
-            activeLibraryRefreshID = nil
-            isRefreshingLibrary = false
-            libraryEntries = []
-            libraryFolderName = "No library folder selected"
-            libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
-            return
-        }
+    func importFilesToLibrary(from urls: [URL]) {
+        guard !urls.isEmpty else { return }
 
         libraryRefreshTask?.cancel()
         isRefreshingLibrary = true
         lastError = nil
-        let folderURL = libraryFolderURL
-        let folderName = libraryFolderURL.lastPathComponent
+        let refreshID = UUID()
+        activeLibraryRefreshID = refreshID
+        libraryStatusMessage = "Importing \(urls.count) file(s)..."
+
+        libraryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.activeLibraryRefreshID == refreshID {
+                    self.isRefreshingLibrary = false
+                }
+            }
+
+            do {
+                let copyTask = Task.detached(priority: .userInitiated) {
+                    try Self.copyFilesToLocalLibrary(from: urls)
+                }
+                let importedCount = try await withTaskCancellationHandler {
+                    try await copyTask.value
+                } onCancel: {
+                    copyTask.cancel()
+                }
+
+                let scanTask = Task.detached(priority: .userInitiated) {
+                    let folderURL = try Self.localLibraryRootURLStatic()
+                    return try Self.loadLibraryEntries(from: folderURL)
+                }
+                let entries = try await withTaskCancellationHandler {
+                    try await scanTask.value
+                } onCancel: {
+                    scanTask.cancel()
+                }
+
+                guard !Task.isCancelled else { return }
+                guard self.activeLibraryRefreshID == refreshID else { return }
+
+                self.libraryEntries = entries.sorted {
+                    $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+                }
+                self.libraryFolderName = LibraryDefaults.localFolderName
+                self.libraryStatusMessage = "Imported \(importedCount) file(s) into Howl."
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.activeLibraryRefreshID == refreshID else { return }
+                self.lastError = error.localizedDescription
+                self.libraryStatusMessage = "Could not import those files."
+            }
+        }
+    }
+
+    func refreshLibrary() {
+        libraryRefreshTask?.cancel()
+        isRefreshingLibrary = true
+        lastError = nil
+        let folderName = LibraryDefaults.localFolderName
         let refreshID = UUID()
         activeLibraryRefreshID = refreshID
         libraryStatusMessage = "Indexing \(folderName)..."
@@ -193,6 +213,7 @@ final class AppModel: ObservableObject {
             }
 
             do {
+                let folderURL = try Self.localLibraryRootURLStatic()
                 let scanTask = Task.detached(priority: .userInitiated) {
                     try Self.loadLibraryEntries(from: folderURL)
                 }
@@ -333,49 +354,18 @@ final class AppModel: ObservableObject {
         renderCurrentFrame()
     }
 
-    private func restoreLibraryFolderIfAvailable() {
-        guard let bookmarkData = UserDefaults.standard.data(forKey: LibraryDefaults.bookmarkKey) else { return }
-
+    private func prepareLocalLibrary() {
         do {
-            var isStale = false
-            let resolvedURL = try URL(
-                resolvingBookmarkData: bookmarkData,
-                options: [],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-
-            let didStartAccess = resolvedURL.startAccessingSecurityScopedResource()
-            libraryFolderURL = resolvedURL
-            libraryFolderAccessIsActive = didStartAccess
-            libraryFolderName = resolvedURL.lastPathComponent
+            let folderURL = try Self.localLibraryRootURLStatic()
+            try FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
+            libraryFolderName = LibraryDefaults.localFolderName
+            libraryStatusMessage = "Stored inside Howl on this iPhone."
             loadFavoritesForCurrentLibrary()
-
-            if isStale {
-                let refreshedBookmark = try resolvedURL.bookmarkData(
-                    options: [],
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
-                UserDefaults.standard.set(refreshedBookmark, forKey: LibraryDefaults.bookmarkKey)
-            }
-
-            refreshLibrary()
         } catch {
-            UserDefaults.standard.removeObject(forKey: LibraryDefaults.bookmarkKey)
-            libraryEntries = []
-            libraryFolderName = "No library folder selected"
-            libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+            lastError = error.localizedDescription
+            libraryStatusMessage = "Could not prepare local library storage."
             favoriteLibraryRelativePaths = []
         }
-    }
-
-    private func releaseLibraryFolderAccess() {
-        guard libraryFolderAccessIsActive, let libraryFolderURL else { return }
-        libraryRefreshTask?.cancel()
-        activeLibraryRefreshID = nil
-        libraryFolderURL.stopAccessingSecurityScopedResource()
-        libraryFolderAccessIsActive = false
     }
 
     nonisolated private static func loadLibraryEntries(from folderURL: URL) throws -> [LibraryEntry] {
@@ -480,27 +470,119 @@ final class AppModel: ObservableObject {
         return ImportedFile(data: fileData, displayName: displayName, ext: ext)
     }
 
-    private func currentFavoritesDefaultsKey() -> String? {
-        guard let libraryFolderURL else { return nil }
-        return LibraryDefaults.favoritesKeyPrefix + libraryFolderURL.path
+    nonisolated private static func copyFilesToLocalLibrary(from urls: [URL]) throws -> Int {
+        let fileManager = FileManager.default
+        let libraryRootURL = try localLibraryRootURLStatic()
+        try fileManager.createDirectory(at: libraryRootURL, withIntermediateDirectories: true)
+
+        var importedCount = 0
+
+        for url in urls {
+            try Task.checkCancellation()
+
+            let didStartAccess = url.startAccessingSecurityScopedResource()
+            let importedFile: ImportedFile
+            do {
+                importedFile = try readImportedFile(from: url)
+            } catch {
+                if didStartAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                throw error
+            }
+
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+
+            let destinationGroupURL = libraryRootURL.appendingPathComponent(
+                groupingFolderName(for: url),
+                isDirectory: true
+            )
+            try fileManager.createDirectory(at: destinationGroupURL, withIntermediateDirectories: true)
+
+            let destinationURL = uniqueDestinationURL(
+                directory: destinationGroupURL,
+                preferredName: importedFile.displayName
+            )
+            try importedFile.data.write(to: destinationURL, options: [.atomic])
+            importedCount += 1
+        }
+
+        return importedCount
+    }
+
+    nonisolated private static func localLibraryRootURLStatic() throws -> URL {
+        guard let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return baseURL.appendingPathComponent("HowlLibrary", isDirectory: true)
+    }
+
+    nonisolated private static func groupingFolderName(for sourceURL: URL) -> String {
+        let folderName = sourceURL.deletingLastPathComponent().lastPathComponent
+        let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "." || trimmed == "/" {
+            return "Imported"
+        }
+        return sanitizePathComponent(trimmed)
+    }
+
+    nonisolated private static func uniqueDestinationURL(directory: URL, preferredName: String) -> URL {
+        let fileManager = FileManager.default
+        let sanitizedName = sanitizeFilename(preferredName)
+        let initialURL = directory.appendingPathComponent(sanitizedName)
+        guard fileManager.fileExists(atPath: initialURL.path) == false else {
+            let ext = initialURL.pathExtension
+            let stem = initialURL.deletingPathExtension().lastPathComponent
+
+            for index in 2...10_000 {
+                let nextName: String
+                if ext.isEmpty {
+                    nextName = "\(stem) \(index)"
+                } else {
+                    nextName = "\(stem) \(index).\(ext)"
+                }
+
+                let nextURL = directory.appendingPathComponent(nextName)
+                if fileManager.fileExists(atPath: nextURL.path) == false {
+                    return nextURL
+                }
+            }
+
+            return directory.appendingPathComponent(UUID().uuidString + "-" + sanitizedName)
+        }
+        return initialURL
+    }
+
+    nonisolated private static func sanitizeFilename(_ value: String) -> String {
+        let url = URL(fileURLWithPath: value)
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        let cleanStem = sanitizePathComponent(stem.isEmpty ? "Imported" : stem)
+        if ext.isEmpty {
+            return cleanStem
+        }
+        return "\(cleanStem).\(sanitizePathComponent(ext))"
+    }
+
+    nonisolated private static func sanitizePathComponent(_ value: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\:?%*|\"<>")
+        let pieces = value.components(separatedBy: invalidCharacters)
+        let joined = pieces.joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
+        return joined.isEmpty ? "Imported" : joined
     }
 
     private func loadFavoritesForCurrentLibrary() {
-        guard let key = currentFavoritesDefaultsKey() else {
-            favoriteLibraryRelativePaths = []
-            return
-        }
-
-        let stored = UserDefaults.standard.array(forKey: key) as? [String] ?? []
+        let stored = UserDefaults.standard.array(forKey: LibraryDefaults.favoritesKey) as? [String] ?? []
         favoriteLibraryRelativePaths = Set(stored)
     }
 
     private func persistFavoritesForCurrentLibrary() {
-        guard let key = currentFavoritesDefaultsKey() else { return }
         let sortedFavorites = favoriteLibraryRelativePaths.sorted { lhs, rhs in
             lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
-        UserDefaults.standard.set(sortedFavorites, forKey: key)
+        UserDefaults.standard.set(sortedFavorites, forKey: LibraryDefaults.favoritesKey)
     }
 
     private func startPlaybackLoop() {

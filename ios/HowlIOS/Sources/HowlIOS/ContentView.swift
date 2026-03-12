@@ -35,7 +35,7 @@ struct ContentView: View {
 
 private struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var showFolderPicker = false
+    @State private var showLibraryImporter = false
     @State private var searchText = ""
 
     private var filteredEntries: [AppModel.LibraryEntry] {
@@ -68,7 +68,7 @@ private struct LibraryView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Library Folder") {
+                Section("Library") {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(model.libraryFolderName)
                             .font(.headline)
@@ -86,8 +86,8 @@ private struct LibraryView: View {
                         }
                     }
 
-                    Button("Choose OneDrive Folder") {
-                        showFolderPicker = true
+                    Button("Add Files to Library") {
+                        showLibraryImporter = true
                     }
                     .buttonStyle(.borderedProminent)
 
@@ -102,7 +102,7 @@ private struct LibraryView: View {
 
                 if filteredEntries.isEmpty {
                     Section("Files") {
-                        Text("No supported `.hwl` or `.funscript` files found yet.")
+                        Text("No stored `.hwl` or `.funscript` files yet. Add files from OneDrive or Files, and Howl will keep local copies here.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -126,13 +126,15 @@ private struct LibraryView: View {
             }
             .navigationTitle("Library")
             .searchable(text: $searchText, prompt: "Search files")
-            .sheet(isPresented: $showFolderPicker) {
-                FolderPickerSheet { result in
+            .sheet(isPresented: $showLibraryImporter) {
+                ScriptPickerSheet(allowsMultipleSelection: true) { result in
                     switch result {
-                    case .success(let url):
-                        model.chooseLibraryFolder(from: url)
+                    case .success(let urls):
+                        model.importFilesToLibrary(from: urls)
                     case .failure(let error):
-                        model.lastError = error.localizedDescription
+                        if error.localizedDescription.isEmpty == false {
+                            model.lastError = error.localizedDescription
+                        }
                     }
                 }
             }
@@ -144,64 +146,9 @@ private struct LibraryView: View {
     }
 }
 
-private struct FolderPickerSheet: UIViewControllerRepresentable {
-    let onComplete: (Result<URL, Error>) -> Void
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(onComplete: onComplete)
-    }
-
-    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.folder],
-            asCopy: false
-        )
-        picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
-        picker.shouldShowFileExtensions = false
-        return picker
-    }
-
-    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
-
-    final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        private let onComplete: (Result<URL, Error>) -> Void
-
-        init(onComplete: @escaping (Result<URL, Error>) -> Void) {
-            self.onComplete = onComplete
-        }
-
-        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else {
-                onComplete(.failure(FolderPickerError.noFolderSelected))
-                return
-            }
-
-            onComplete(.success(url))
-        }
-
-        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            onComplete(.failure(FolderPickerError.cancelled))
-        }
-    }
-
-    private enum FolderPickerError: LocalizedError {
-        case noFolderSelected
-        case cancelled
-
-        var errorDescription: String? {
-            switch self {
-            case .noFolderSelected:
-                return "No folder was selected."
-            case .cancelled:
-                return nil
-            }
-        }
-    }
-}
-
 private struct ScriptPickerSheet: UIViewControllerRepresentable {
-    let onComplete: (Result<URL, Error>) -> Void
+    let allowsMultipleSelection: Bool
+    let onComplete: (Result<[URL], Error>) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onComplete: onComplete)
@@ -213,26 +160,26 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
             asCopy: true
         )
         picker.delegate = context.coordinator
-        picker.allowsMultipleSelection = false
+        picker.allowsMultipleSelection = allowsMultipleSelection
         return picker
     }
 
     func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
 
     final class Coordinator: NSObject, UIDocumentPickerDelegate {
-        private let onComplete: (Result<URL, Error>) -> Void
+        private let onComplete: (Result<[URL], Error>) -> Void
 
-        init(onComplete: @escaping (Result<URL, Error>) -> Void) {
+        init(onComplete: @escaping (Result<[URL], Error>) -> Void) {
             self.onComplete = onComplete
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-            guard let url = urls.first else {
+            guard urls.isEmpty == false else {
                 onComplete(.failure(ScriptPickerError.noFileSelected))
                 return
             }
 
-            onComplete(.success(url))
+            onComplete(.success(urls))
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
@@ -388,9 +335,10 @@ private struct PlayerView: View {
             }
             .navigationTitle("Howl")
             .sheet(isPresented: $showImporter) {
-                ScriptPickerSheet { result in
+                ScriptPickerSheet(allowsMultipleSelection: false) { result in
                     switch result {
-                    case .success(let url):
+                    case .success(let urls):
+                        guard let url = urls.first else { return }
                         model.importFile(from: url)
                     case .failure(let error):
                         if error.localizedDescription.isEmpty == false {
