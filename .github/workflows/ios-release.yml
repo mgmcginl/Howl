@@ -31,8 +31,6 @@ jobs:
     env:
       PROJECT_PATH: ios/HowlIOS.xcodeproj
       SCHEME: HowlIOS
-      ARCHIVE_PATH: ${{ runner.temp }}/HowlIOS.xcarchive
-      EXPORT_PATH: ${{ runner.temp }}/export
 
     steps:
       - name: Checkout
@@ -66,11 +64,11 @@ jobs:
           P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
           BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-          CERT_PATH: ${{ runner.temp }}/build_certificate.p12
-          PROFILE_PATH: ${{ runner.temp }}/build_profile.mobileprovision
         run: |
           set -euo pipefail
 
+          CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+          PROFILE_PATH="$RUNNER_TEMP/build_profile.mobileprovision"
           PROFILE_PLIST="$RUNNER_TEMP/build_profile.plist"
           KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
 
@@ -111,11 +109,11 @@ jobs:
         env:
           APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
           APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
-          API_KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey_${{ secrets.APP_STORE_CONNECT_KEY_ID }}.p8
         run: |
           set -euo pipefail
 
           API_KEY_DIR="$RUNNER_TEMP/private_keys"
+          API_KEY_PATH="$API_KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
           mkdir -p "$API_KEY_DIR"
           python3 - <<'PY'
           import base64
@@ -138,6 +136,8 @@ jobs:
           PROFILE_NAME: ${{ steps.signing.outputs.profile_name }}
         run: |
           set -euo pipefail
+
+          ARCHIVE_PATH="$RUNNER_TEMP/HowlIOS.xcarchive"
 
           xcodebuild \
             -project "$PROJECT_PATH" \
@@ -194,10 +194,11 @@ jobs:
         run: |
           set -euo pipefail
 
+          EXPORT_PATH="$RUNNER_TEMP/export"
           mkdir -p "$EXPORT_PATH"
           xcodebuild \
             -exportArchive \
-            -archivePath "$ARCHIVE_PATH" \
+            -archivePath "$RUNNER_TEMP/HowlIOS.xcarchive" \
             -exportPath "$EXPORT_PATH" \
             -exportOptionsPlist "${{ steps.export_options.outputs.path }}"
 
@@ -207,6 +208,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          EXPORT_PATH="$RUNNER_TEMP/export"
           IPA_PATH=$(find "$EXPORT_PATH" -maxdepth 1 -name "*.ipa" | head -n 1)
           if [ -z "$IPA_PATH" ]; then
             echo "Could not find exported IPA." >&2
