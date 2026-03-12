@@ -2,6 +2,27 @@ import Foundation
 import SwiftUI
 import ZIPFoundation
 
+private func normalizedLibraryDisplayPathComponents(from components: [String]) -> [String] {
+    guard components.isEmpty == false else { return [] }
+
+    var normalized = components
+
+    if let first = normalized.first {
+        let lowered = first.lowercased()
+        if lowered == "private", normalized.count > 1 {
+            normalized.removeFirst()
+        } else if lowered.hasPrefix("private"), first.count > "private".count {
+            let suffix = String(first.dropFirst("private".count))
+                .trimmingCharacters(in: CharacterSet(charactersIn: "_- "))
+            if suffix.isEmpty == false {
+                normalized[0] = suffix
+            }
+        }
+    }
+
+    return normalized
+}
+
 enum OutputMode: String, CaseIterable, Identifiable {
     case preview = "Preview Only"
     case coyote3PacketPreview = "Stage Coyote 3 Packet"
@@ -51,6 +72,10 @@ final class AppModel: ObservableObject {
                 .map(String.init)
         }
 
+        var displayPathComponents: [String] {
+            normalizedLibraryDisplayPathComponents(from: pathComponents)
+        }
+
         var folderPathComponents: [String] {
             Array(pathComponents.dropLast())
         }
@@ -61,6 +86,14 @@ final class AppModel: ObservableObject {
 
         var topLevelGroupName: String {
             pathComponents.dropLast().first ?? "Root Files"
+        }
+
+        var displayRelativePath: String {
+            displayPathComponents.joined(separator: "/")
+        }
+
+        var displayFolderPathComponents: [String] {
+            Array(displayPathComponents.dropLast())
         }
     }
 
@@ -1045,7 +1078,7 @@ final class AppModel: ObservableObject {
         var rootFiles: [LibraryEntry] = []
 
         for entry in entries {
-            if entry.folderPathComponents.isEmpty {
+            if entry.displayFolderPathComponents.isEmpty {
                 rootFiles.append(entry)
                 continue
             }
@@ -1053,7 +1086,7 @@ final class AppModel: ObservableObject {
             var currentNode = root
             var currentPathComponents: [String] = []
 
-            for component in entry.folderPathComponents {
+            for component in entry.displayFolderPathComponents {
                 currentPathComponents.append(component)
                 let node = currentNode.folders[component] ?? {
                     let created = MutableFolderNode(

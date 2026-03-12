@@ -46,6 +46,7 @@ private struct LibraryView: View {
         guard !trimmed.isEmpty else { return model.libraryEntries }
         return model.libraryEntries.filter {
             $0.relativePath.localizedCaseInsensitiveContains(trimmed)
+                || $0.displayRelativePath.localizedCaseInsensitiveContains(trimmed)
                 || $0.displayName.localizedCaseInsensitiveContains(trimmed)
         }
     }
@@ -348,7 +349,7 @@ private struct LibraryEntryRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.displayName)
                     .foregroundStyle(.primary)
-                Text(entry.relativePath)
+                Text(entry.displayRelativePath)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if let modifiedAt = entry.modifiedAt {
