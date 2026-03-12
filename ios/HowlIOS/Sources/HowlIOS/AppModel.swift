@@ -129,7 +129,7 @@ final class AppModel: ObservableObject {
 
         do {
             lastError = nil
-            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            let bookmark = try url.bookmarkData()
             UserDefaults.standard.set(bookmark, forKey: LibraryDefaults.bookmarkKey)
 
             releaseLibraryFolderAccess()
@@ -272,7 +272,7 @@ final class AppModel: ObservableObject {
             var isStale = false
             let resolvedURL = try URL(
                 resolvingBookmarkData: bookmarkData,
-                options: [.withSecurityScope],
+                options: [],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
             )
@@ -284,7 +284,7 @@ final class AppModel: ObservableObject {
 
             if isStale {
                 let refreshedBookmark = try resolvedURL.bookmarkData(
-                    options: .withSecurityScope,
+                    options: [],
                     includingResourceValuesForKeys: nil,
                     relativeTo: nil
                 )
