@@ -1,6 +1,5 @@
 import Foundation
 import SwiftUI
-import HowlCore
 
 enum OutputMode: String, CaseIterable, Identifiable {
     case preview = "Preview Only"

@@ -1,6 +1,5 @@
 import CoreBluetooth
 import Foundation
-import HowlCore
 
 @MainActor
 final class CoyoteBluetoothManager: NSObject, ObservableObject {

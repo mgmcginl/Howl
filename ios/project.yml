@@ -7,29 +7,20 @@ settings:
   base:
     SWIFT_VERSION: 5.10
 targets:
-  HowlCore:
-    type: framework
-    platform: iOS
-    sources:
-      - path: HowlCore/Sources
-    settings:
-      base:
-        CODE_SIGNING_ALLOWED: NO
-        PRODUCT_BUNDLE_IDENTIFIER: com.amethystsysadmin.howlcore
-        DEFINES_MODULE: YES
-        SKIP_INSTALL: YES
   HowlIOS:
     type: application
     platform: iOS
     sources:
+      - path: HowlCore/Sources
       - path: HowlIOS/Sources
+      - path: HowlIOS/Resources
     dependencies:
-      - target: HowlCore
       - sdk: CoreBluetooth.framework
     info:
       path: HowlIOS/Info.plist
       properties:
         CFBundleDisplayName: Howl
+        CFBundleIconName: AppIcon
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         NSBluetoothAlwaysUsageDescription: Howl uses Bluetooth to discover and connect to compatible devices.
@@ -41,14 +32,10 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
     settings:
       base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         PRODUCT_BUNDLE_IDENTIFIER: com.amethystsysadmin.howl.ios
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: ""
-        TARGETED_DEVICE_FAMILY: "1,2"
+        TARGETED_DEVICE_FAMILY: "1"

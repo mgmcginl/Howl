@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import HowlCore
 
 struct ContentView: View {
     var body: some View {
