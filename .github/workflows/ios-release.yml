@@ -158,6 +158,20 @@ jobs:
             CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
             archive
 
+      - name: Stamp archived app version
+        shell: bash
+        env:
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.build_number.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          APP_INFO_PLIST="$RUNNER_TEMP/HowlIOS.xcarchive/Products/Applications/HowlIOS.app/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $MARKETING_VERSION" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP_INFO_PLIST"
+
       - name: Create export options
         id: export_options
         shell: bash

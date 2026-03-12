@@ -97,14 +97,94 @@ public struct GeneratorPulseSource: PulseSource {
 }
 
 public enum DemoActivity: String, CaseIterable, Identifiable, Sendable {
+    case hardwareTestA = "Hardware Test A Only"
+    case hardwareTestB = "Hardware Test B Only"
+    case hardwareTestDual = "Hardware Test Dual Sync"
     case tease = "Tease"
     case orbit = "Orbit"
     case ladder = "Ladder"
 
     public var id: String { rawValue }
 
+    public var isHardwareTest: Bool {
+        switch self {
+        case .hardwareTestA, .hardwareTestB, .hardwareTestDual:
+            return true
+        case .tease, .orbit, .ladder:
+            return false
+        }
+    }
+
+    public static var hardwareTests: [DemoActivity] {
+        allCases.filter(\.isHardwareTest)
+    }
+
+    public static var prototypePresets: [DemoActivity] {
+        allCases.filter { !$0.isHardwareTest }
+    }
+
     public var generatorConfig: GeneratorConfig {
         switch self {
+        case .hardwareTestA:
+            return GeneratorConfig(
+                speed: 0.25,
+                channelA: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.95,
+                    maxAmplitude: 0.95,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                ),
+                channelB: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.0,
+                    maxAmplitude: 0.0,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                )
+            )
+        case .hardwareTestB:
+            return GeneratorConfig(
+                speed: 0.25,
+                channelA: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.0,
+                    maxAmplitude: 0.0,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                ),
+                channelB: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.95,
+                    maxAmplitude: 0.95,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                )
+            )
+        case .hardwareTestDual:
+            return GeneratorConfig(
+                speed: 0.25,
+                channelA: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.95,
+                    maxAmplitude: 0.95,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                ),
+                channelB: GeneratorChannelConfig(
+                    amplitudeShape: "Sawtooth",
+                    frequencyShape: "Sawtooth",
+                    minAmplitude: 0.95,
+                    maxAmplitude: 0.95,
+                    minFrequencyNormalized: 0.5,
+                    maxFrequencyNormalized: 0.5
+                )
+            )
         case .tease:
             return GeneratorConfig(
                 speed: 0.42,

@@ -250,8 +250,25 @@ private struct ActivitiesView: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("Hardware Tests") {
+                    ForEach(DemoActivity.hardwareTests) { activity in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(activity.rawValue)
+                                .font(.headline)
+                            Text(hardwareTestDescription(for: activity))
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                            Button("Load and Play") {
+                                model.loadActivity(activity, playImmediately: true)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                }
+
                 Section("Prototype Presets") {
-                    ForEach(DemoActivity.allCases) { activity in
+                    ForEach(DemoActivity.prototypePresets) { activity in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(activity.rawValue)
                                 .font(.headline)
@@ -265,12 +282,25 @@ private struct ActivitiesView: View {
                 }
 
                 Section("Why this is scoped down") {
-                    Text("This iPhone MVP keeps the safe, portable parts first: file playback, pulse timing, generator logic, and one clean Coyote 3 path. Full parity with Android should wait until real hardware validation.")
+                    Text("Use the hardware tests before judging channel behavior. The prototype presets are intentionally asymmetrical and can make one side dominate before the other.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Activities")
+        }
+    }
+
+    private func hardwareTestDescription(for activity: DemoActivity) -> String {
+        switch activity {
+        case .hardwareTestA:
+            return "Constant output on Channel A only."
+        case .hardwareTestB:
+            return "Constant output on Channel B only."
+        case .hardwareTestDual:
+            return "Constant matched output on both channels."
+        case .tease, .orbit, .ladder:
+            return ""
         }
     }
 }
