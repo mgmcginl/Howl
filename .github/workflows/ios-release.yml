@@ -6,11 +6,11 @@ on:
       bundle_id:
         description: "Bundle identifier registered in Apple Developer and App Store Connect"
         required: true
-        default: "com.example.howl.ios"
+        default: "com.markmcginley.howl.ios"
       marketing_version:
         description: "Marketing version, for example 0.1.0"
         required: true
-        default: "0.1.0"
+        default: "1.0"
       build_number:
         description: "Build number. Leave blank to use the GitHub run number."
         required: false
