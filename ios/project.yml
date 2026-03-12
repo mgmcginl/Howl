@@ -14,6 +14,7 @@ targets:
       - path: HowlCore/Sources
     settings:
       base:
+        CODE_SIGNING_ALLOWED: NO
         PRODUCT_BUNDLE_IDENTIFIER: com.amethystsysadmin.howlcore
         DEFINES_MODULE: YES
         SKIP_INSTALL: YES
