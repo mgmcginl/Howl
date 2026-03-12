@@ -1,6 +1,7 @@
 import Foundation
 
 public enum Coyote3Protocol {
+    public static let pulseBatchSize = 4
     public static let batteryServiceUUID = UUID(uuidString: "0000180A-0000-1000-8000-00805f9b34fb")!
     public static let mainServiceUUID = UUID(uuidString: "0000180C-0000-1000-8000-00805f9b34fb")!
     public static let batteryCharacteristicUUID = UUID(uuidString: "00001500-0000-1000-8000-00805f9b34fb")!
@@ -8,14 +9,18 @@ public enum Coyote3Protocol {
     public static let notifyCharacteristicUUID = UUID(uuidString: "0000150B-0000-1000-8000-00805f9b34fb")!
 
     public static func pulsePacket(
-        pulse: Pulse,
+        pulses: [Pulse],
         powerA: Int,
         powerB: Int,
         minFrequency: Double,
         maxFrequency: Double,
         previousPowerA: Int? = nil,
         previousPowerB: Int? = nil
-    ) -> Data {
+    ) throws -> Data {
+        guard pulses.count == pulseBatchSize else {
+            throw HowlCoreError.invalidCoyoteBatchSize(expected: pulseBatchSize, actual: pulses.count)
+        }
+
         let strengthByte: UInt8
         if powerA != previousPowerA || powerB != previousPowerB {
             strengthByte = 0x1F
@@ -24,21 +29,31 @@ public enum Coyote3Protocol {
         }
 
         let frequencySpan = maxFrequency - minFrequency
-        let channelAFrequency = frequencyToCoyote(minFrequency + frequencySpan * Double(pulse.freqA))
-        let channelBFrequency = frequencyToCoyote(minFrequency + frequencySpan * Double(pulse.freqB))
-        let amplitudeA = UInt8((Double(pulse.ampA) * 100).rounded().clamped(to: 0...100))
-        let amplitudeB = UInt8((Double(pulse.ampB) * 100).rounded().clamped(to: 0...100))
+        let channelAFrequencies = pulses.map {
+            frequencyToCoyote(minFrequency + frequencySpan * Double($0.freqA))
+        }
+        let channelBFrequencies = pulses.map {
+            frequencyToCoyote(minFrequency + frequencySpan * Double($0.freqB))
+        }
+        let amplitudesA = pulses.map {
+            UInt8((Double($0.ampA) * 100).rounded().clamped(to: 0...100))
+        }
+        let amplitudesB = pulses.map {
+            UInt8((Double($0.ampB) * 100).rounded().clamped(to: 0...100))
+        }
 
-        return Data([
-            0xB0,
-            strengthByte,
-            UInt8(powerA.clamped(to: 0...200)),
-            UInt8(powerB.clamped(to: 0...200)),
-            channelAFrequency,
-            amplitudeA,
-            channelBFrequency,
-            amplitudeB
-        ])
+        return Data(
+            [
+                0xB0,
+                strengthByte,
+                UInt8(powerA.clamped(to: 0...200)),
+                UInt8(powerB.clamped(to: 0...200))
+            ] +
+            channelAFrequencies +
+            amplitudesA +
+            channelBFrequencies +
+            amplitudesB
+        )
     }
 
     public static func parameterPacket(
@@ -58,6 +73,27 @@ public enum Coyote3Protocol {
             UInt8(intensityBalanceA.clamped(to: 0...255)),
             UInt8(intensityBalanceB.clamped(to: 0...255))
         ])
+    }
+
+    public static func decodeStatusPacket(_ data: Data) -> StatusPacket? {
+        guard data.count >= 4, data[0] == 0xB1 else { return nil }
+        return StatusPacket(
+            rawData: data,
+            strengthByte: data[1],
+            powerA: Int(data[2]),
+            powerB: Int(data[3])
+        )
+    }
+
+    public struct StatusPacket: Equatable, Sendable {
+        public let rawData: Data
+        public let strengthByte: UInt8
+        public let powerA: Int
+        public let powerB: Int
+
+        public var shouldApplyPowerEcho: Bool {
+            strengthByte == 0x00
+        }
     }
 
     private static func frequencyToCoyote(_ frequency: Double) -> UInt8 {

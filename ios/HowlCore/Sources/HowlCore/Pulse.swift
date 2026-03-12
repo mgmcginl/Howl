@@ -34,6 +34,7 @@ public enum HowlCoreError: LocalizedError {
     case emptyFunscript
     case unsupportedFileType(String)
     case invalidFunscript
+    case invalidCoyoteBatchSize(expected: Int, actual: Int)
 
     public var errorDescription: String? {
         switch self {
@@ -47,6 +48,8 @@ public enum HowlCoreError: LocalizedError {
             return "Unsupported file type: \(ext)"
         case .invalidFunscript:
             return "The funscript JSON could not be decoded."
+        case .invalidCoyoteBatchSize(let expected, let actual):
+            return "Expected \(expected) Coyote pulses but received \(actual)."
         }
     }
 }

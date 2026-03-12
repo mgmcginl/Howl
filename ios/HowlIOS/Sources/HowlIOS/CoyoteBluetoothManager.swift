@@ -26,6 +26,14 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     @Published var stagedPacketHex = ""
     @Published var lastNotifyHex = ""
     @Published var batteryLevel: Int?
+    @Published var devicePowerA: Int?
+    @Published var devicePowerB: Int?
+    @Published var lastNotifySummary = "No notify frames yet."
+    @Published var lastWriteHex = ""
+    @Published var lastWriteSummary = "No packets sent yet."
+    @Published var sentPulsePacketCount = 0
+    @Published var queuedPulsePacketCount = 0
+    @Published var notifyFrameCount = 0
     @Published var lastError: String?
 
     var isReady: Bool {
@@ -157,6 +165,8 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
             if properties.contains(.writeWithoutResponse) {
                 guard connectedPeripheral.canSendWriteWithoutResponse else {
                     queuedPulsePacket = data
+                    queuedPulsePacketCount += 1
+                    lastWriteSummary = "Queued latest live pulse batch because BLE backpressure is active."
                     return
                 }
                 writeType = .withoutResponse
@@ -172,6 +182,7 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         }
 
         connectedPeripheral.writeValue(data, for: writeCharacteristic, type: writeType)
+        recordWrite(data, intent: intent, writeType: writeType)
 
         if writeType == .withoutResponse && intent == .initialSync {
             finishInitialSync()
@@ -214,8 +225,30 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         queuedPulsePacket = nil
         lastNotifyHex = ""
         batteryLevel = nil
+        devicePowerA = nil
+        devicePowerB = nil
+        lastNotifySummary = "No notify frames yet."
+        lastWriteHex = ""
+        lastWriteSummary = "No packets sent yet."
+        sentPulsePacketCount = 0
+        queuedPulsePacketCount = 0
+        notifyFrameCount = 0
         if clearPeripheral {
             connectedPeripheral = nil
+        }
+    }
+
+    private func recordWrite(_ data: Data, intent: PendingWriteIntent, writeType: CBCharacteristicWriteType) {
+        lastWriteHex = data.hexString
+        let responseLabel = writeType == .withResponse ? "with response" : "without response"
+        switch intent {
+        case .initialSync:
+            lastWriteSummary = "Synced Coyote parameters (\(responseLabel))."
+        case .parameterUpdate:
+            lastWriteSummary = "Updated Coyote parameters (\(responseLabel))."
+        case .pulse:
+            sentPulsePacketCount += 1
+            lastWriteSummary = "Sent live pulse batch #\(sentPulsePacketCount) (\(responseLabel))."
         }
     }
 }
@@ -384,6 +417,15 @@ extension CoyoteBluetoothManager: CBPeripheralDelegate {
 
         if characteristic.uuid == notifyCharacteristicUUID {
             lastNotifyHex = data.hexString
+            notifyFrameCount += 1
+            if let status = Coyote3Protocol.decodeStatusPacket(data) {
+                devicePowerA = status.powerA
+                devicePowerB = status.powerB
+                let modeLabel = status.shouldApplyPowerEcho ? "device-applied" : "strength-sync"
+                lastNotifySummary = "Status #\(notifyFrameCount): A \(status.powerA) / B \(status.powerB) [\(modeLabel)]"
+            } else {
+                lastNotifySummary = "Notify #\(notifyFrameCount): unrecognized frame \(data.hexString)"
+            }
         }
     }
 

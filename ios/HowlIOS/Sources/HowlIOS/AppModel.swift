@@ -47,7 +47,9 @@ final class AppModel: ObservableObject {
     private var previousPowerA: Int?
     private var previousPowerB: Int?
     private let pulseInterval = 1.0 / 40.0
+    private let outputBatchSize = Coyote3Protocol.pulseBatchSize
     private let maxHistoryPoints = 36
+    private var playbackTickIndex = 0
 
     init() {
         syncBleLimits()
@@ -134,6 +136,7 @@ final class AppModel: ObservableObject {
 
         guard !isPlaying else { return }
         isPlaying = true
+        playbackTickIndex = 0
         statusMessage = outputMode == .coyote3Live && !bleManager.isReady
             ? "Playing \(sourceName) while waiting for a ready Coyote 3."
             : "Playing \(sourceName)."
@@ -151,6 +154,7 @@ final class AppModel: ObservableObject {
 
     func seek(to newPosition: TimeInterval) {
         position = newPosition
+        playbackTickIndex = 0
         renderCurrentFrame()
     }
 
@@ -167,6 +171,7 @@ final class AppModel: ObservableObject {
         recentPulses = []
         previousPowerA = nil
         previousPowerB = nil
+        playbackTickIndex = 0
         statusMessage = "Loaded \(source.displayName)."
         renderCurrentFrame()
     }
@@ -191,12 +196,14 @@ final class AppModel: ObservableObject {
         let pulse = source.pulse(at: position)
         currentPulse = pulse
         appendToHistory(pulse)
-        applyOutput(for: pulse, transmit: true)
+        applyOutput(for: pulse, source: source, at: position, transmit: true)
 
         let nextPosition = position + pulseInterval
+        playbackTickIndex += 1
         if let duration = source.duration, nextPosition > duration {
             if source.shouldLoop {
                 position = 0
+                playbackTickIndex = 0
             } else {
                 stop()
             }
@@ -216,7 +223,7 @@ final class AppModel: ObservableObject {
         if recentPulses.isEmpty {
             recentPulses = [currentPulse]
         }
-        applyOutput(for: currentPulse, transmit: false)
+        applyOutput(for: currentPulse, source: source, at: position, transmit: false)
     }
 
     private func appendToHistory(_ pulse: Pulse) {
@@ -246,23 +253,31 @@ final class AppModel: ObservableObject {
         bleManager.updateDesiredLimits(limitA: powerA, limitB: powerB)
     }
 
-    private func applyOutput(for pulse: Pulse, transmit: Bool) {
+    private func applyOutput(for _: Pulse, source: any PulseSource, at time: TimeInterval, transmit: Bool) {
         switch outputMode {
         case .preview:
             bleManager.clearStagedPacket()
         case .coyote3PacketPreview, .coyote3Live:
-            let packet = Coyote3Protocol.pulsePacket(
-                pulse: pulse,
-                powerA: powerA,
-                powerB: powerB,
-                minFrequency: minFrequency,
-                maxFrequency: maxFrequency,
-                previousPowerA: previousPowerA,
-                previousPowerB: previousPowerB
-            )
+            guard let pulses = buildCoyoteBatch(source: source, at: time) else { return }
+            let packet: Data
+            do {
+                packet = try Coyote3Protocol.pulsePacket(
+                    pulses: pulses,
+                    powerA: powerA,
+                    powerB: powerB,
+                    minFrequency: minFrequency,
+                    maxFrequency: maxFrequency,
+                    previousPowerA: previousPowerA,
+                    previousPowerB: previousPowerB
+                )
+            } catch {
+                lastError = error.localizedDescription
+                return
+            }
             bleManager.stage(packet)
 
             guard transmit else { return }
+            guard playbackTickIndex.isMultiple(of: outputBatchSize) else { return }
             previousPowerA = powerA
             previousPowerB = powerB
 
@@ -272,23 +287,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func buildCoyoteBatch(source: any PulseSource, at time: TimeInterval) -> [Pulse]? {
+        let pulses = (0..<outputBatchSize).map { index in
+            source.pulse(at: time + pulseInterval * Double(index))
+        }
+        guard pulses.count == outputBatchSize else { return nil }
+        return pulses
+    }
+
     private func sendSilenceIfNeeded() {
         guard outputMode == .coyote3Live else { return }
         sendSilence()
     }
 
     private func sendSilence() {
-        let silencePacket = Coyote3Protocol.pulsePacket(
-            pulse: .silence,
-            powerA: powerA,
-            powerB: powerB,
-            minFrequency: minFrequency,
-            maxFrequency: maxFrequency,
-            previousPowerA: previousPowerA,
-            previousPowerB: previousPowerB
-        )
-        bleManager.sendLivePacket(silencePacket)
-        previousPowerA = powerA
-        previousPowerB = powerB
+        do {
+            let packet = try Coyote3Protocol.pulsePacket(
+                pulses: Array(repeating: .silence, count: outputBatchSize),
+                powerA: powerA,
+                powerB: powerB,
+                minFrequency: minFrequency,
+                maxFrequency: maxFrequency,
+                previousPowerA: previousPowerA,
+                previousPowerB: previousPowerB
+            )
+            bleManager.sendLivePacket(packet)
+            previousPowerA = powerA
+            previousPowerB = powerB
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 }

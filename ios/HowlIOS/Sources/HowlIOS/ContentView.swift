@@ -295,6 +295,12 @@ private struct SettingsView: View {
                     LabeledContent("State", value: bleManager.state.rawValue)
                     LabeledContent("Last Seen", value: bleManager.lastSeenDeviceName)
                     LabeledContent("Battery", value: bleManager.batteryLevel.map { "\($0)%" } ?? "Unknown")
+                    LabeledContent(
+                        "Device Echo",
+                        value: bleManager.devicePowerA.flatMap { powerA in
+                            bleManager.devicePowerB.map { powerB in "A \(powerA) / B \(powerB)" }
+                        } ?? "No echo yet"
+                    )
 
                     if bleManager.state == .disconnected || bleManager.state == .unavailable {
                         Button("Scan for Coyote 3") {
@@ -308,9 +314,19 @@ private struct SettingsView: View {
 
                     if !bleManager.stagedPacketHex.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Staged Packet")
+                            Text("Current Packet Preview")
                                 .font(.caption.weight(.semibold))
                             Text(bleManager.stagedPacketHex)
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    if !bleManager.lastWriteHex.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Last Sent Packet")
+                                .font(.caption.weight(.semibold))
+                            Text(bleManager.lastWriteHex)
                                 .font(.caption.monospaced())
                                 .textSelection(.enabled)
                         }
@@ -333,6 +349,14 @@ private struct SettingsView: View {
                     }
                 }
 
+                Section("Diagnostics") {
+                    LabeledContent("Last Write", value: bleManager.lastWriteSummary)
+                    LabeledContent("Last Notify", value: bleManager.lastNotifySummary)
+                    LabeledContent("Pulse Batches", value: "\(bleManager.sentPulsePacketCount)")
+                    LabeledContent("Backpressure Hits", value: "\(bleManager.queuedPulsePacketCount)")
+                    LabeledContent("Notify Frames", value: "\(bleManager.notifyFrameCount)")
+                }
+
                 Section("Frequency Range") {
                     LabeledSlider(
                         title: "Minimum",
@@ -349,7 +373,7 @@ private struct SettingsView: View {
                 }
 
                 Section("Notes") {
-                    Text("This build now performs the Coyote 3 notify subscription, parameter sync, battery reads, and live pulse writes. Coyote 2, recorder mode, and hardware validation still need a separate pass.")
+                    Text("This build now matches the Android Coyote 3 packet shape, sends 4-pulse batches, and exposes transport diagnostics for first-pass hardware testing. Coyote 2, recorder mode, and real device validation still need a separate pass.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
