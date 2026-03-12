@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import ZIPFoundation
 
 enum OutputMode: String, CaseIterable, Identifiable {
     case preview = "Preview Only"
@@ -38,6 +39,7 @@ final class AppModel: ObservableObject {
 
     private enum LibraryDefaults {
         static let supportedExtensions = Set(["hwl", "funscript"])
+        static let supportedImportExtensions = Set(["hwl", "funscript", "zip"])
         static let favoritesKey = "Howl.LibraryFavorites.Local"
         static let localFolderName = "Imported Scripts"
     }
@@ -184,7 +186,9 @@ final class AppModel: ObservableObject {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
                 }
                 self.libraryFolderName = LibraryDefaults.localFolderName
-                self.libraryStatusMessage = "Imported \(importedCount) file(s) into Howl."
+                self.libraryStatusMessage = importedCount == 0
+                    ? "No supported `.hwl` or `.funscript` files were found in that import."
+                    : "Imported \(importedCount) file(s) into Howl."
             } catch is CancellationError {
                 return
             } catch {
@@ -479,37 +483,121 @@ final class AppModel: ObservableObject {
 
         for url in urls {
             try Task.checkCancellation()
+            let ext = url.pathExtension.lowercased()
+            guard LibraryDefaults.supportedImportExtensions.contains(ext) else { continue }
 
-            let didStartAccess = url.startAccessingSecurityScopedResource()
-            let importedFile: ImportedFile
-            do {
-                importedFile = try readImportedFile(from: url)
-            } catch {
-                if didStartAccess {
-                    url.stopAccessingSecurityScopedResource()
-                }
-                throw error
+            switch ext {
+            case "zip":
+                importedCount += try importArchiveToLocalLibrary(from: url, libraryRootURL: libraryRootURL)
+            default:
+                importedCount += try importRegularFileToLocalLibrary(from: url, libraryRootURL: libraryRootURL)
             }
+        }
 
+        return importedCount
+    }
+
+    nonisolated private static func importRegularFileToLocalLibrary(from url: URL, libraryRootURL: URL) throws -> Int {
+        let fileManager = FileManager.default
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+        defer {
             if didStartAccess {
                 url.stopAccessingSecurityScopedResource()
             }
+        }
 
-            let destinationGroupURL = libraryRootURL.appendingPathComponent(
-                groupingFolderName(for: url),
-                isDirectory: true
-            )
-            try fileManager.createDirectory(at: destinationGroupURL, withIntermediateDirectories: true)
+        let importedFile = try readImportedFile(from: url)
+        let destinationGroupURL = libraryRootURL.appendingPathComponent(
+            groupingFolderName(for: url),
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: destinationGroupURL, withIntermediateDirectories: true)
 
-            let destinationURL = uniqueDestinationURL(
-                directory: destinationGroupURL,
-                preferredName: importedFile.displayName
-            )
-            try importedFile.data.write(to: destinationURL, options: [.atomic])
+        let destinationURL = uniqueDestinationURL(
+            directory: destinationGroupURL,
+            preferredName: importedFile.displayName
+        )
+        try importedFile.data.write(to: destinationURL, options: [.atomic])
+        return 1
+    }
+
+    nonisolated private static func importArchiveToLocalLibrary(from url: URL, libraryRootURL: URL) throws -> Int {
+        let fileManager = FileManager.default
+        let temporaryRootURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: temporaryRootURL, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: temporaryRootURL)
+        }
+
+        let temporaryArchiveURL = temporaryRootURL.appendingPathComponent(url.lastPathComponent)
+        try copyCoordinatedItem(from: url, to: temporaryArchiveURL)
+
+        guard let archive = Archive(url: temporaryArchiveURL, accessMode: .read) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        let fileEntries = archive.filter { entry in
+            entry.type == .file && LibraryDefaults.supportedExtensions.contains(URL(fileURLWithPath: entry.path).pathExtension.lowercased())
+        }
+        let strippedRoot = commonArchiveRoot(for: fileEntries.map(\.path))
+
+        var importedCount = 0
+
+        for entry in fileEntries {
+            try Task.checkCancellation()
+
+            let normalizedPath = normalizedArchiveRelativePath(for: entry.path, stripping: strippedRoot)
+            let pathParts = normalizedPath
+                .split(separator: "/")
+                .map(String.init)
+
+            guard let fileName = pathParts.last else { continue }
+            let directoryParts = Array(pathParts.dropLast())
+
+            let destinationDirectory = directoryParts.reduce(libraryRootURL) { partial, next in
+                partial.appendingPathComponent(next, isDirectory: true)
+            }
+            try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+            let destinationURL = uniqueDestinationURL(directory: destinationDirectory, preferredName: fileName)
+            _ = try archive.extract(entry, to: destinationURL)
             importedCount += 1
         }
 
         return importedCount
+    }
+
+    nonisolated private static func copyCoordinatedItem(from sourceURL: URL, to destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        let didStartAccess = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if didStartAccess {
+                sourceURL.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var copyError: Error?
+
+        coordinator.coordinate(readingItemAt: sourceURL, options: [], error: &coordinationError) { coordinatedURL in
+            do {
+                if fileManager.fileExists(atPath: destinationURL.path) {
+                    try fileManager.removeItem(at: destinationURL)
+                }
+                try fileManager.copyItem(at: coordinatedURL, to: destinationURL)
+            } catch {
+                copyError = error
+            }
+        }
+
+        if let coordinationError {
+            throw coordinationError
+        }
+
+        if let copyError {
+            throw copyError
+        }
     }
 
     nonisolated private static func localLibraryRootURLStatic() throws -> URL {
@@ -526,6 +614,47 @@ final class AppModel: ObservableObject {
             return "Imported"
         }
         return sanitizePathComponent(trimmed)
+    }
+
+    nonisolated private static func commonArchiveRoot(for entryPaths: [String]) -> String? {
+        let componentLists = entryPaths
+            .map(archivePathComponents(for:))
+            .filter { $0.isEmpty == false }
+
+        guard let firstComponents = componentLists.first, let candidate = firstComponents.first else {
+            return nil
+        }
+
+        guard firstComponents.count > 1 else { return nil }
+        guard componentLists.allSatisfy({ $0.first == candidate && $0.count > 1 }) else { return nil }
+        return candidate
+    }
+
+    nonisolated private static func normalizedArchiveRelativePath(for entryPath: String, stripping strippedRoot: String?) -> String {
+        var components = archivePathComponents(for: entryPath)
+        if let strippedRoot, components.first == strippedRoot {
+            components.removeFirst()
+        }
+
+        let sanitizedComponents = components.map(sanitizePathComponent).filter { $0.isEmpty == false }
+        if sanitizedComponents.isEmpty {
+            return sanitizeFilename(URL(fileURLWithPath: entryPath).lastPathComponent)
+        }
+
+        if sanitizedComponents.count == 1 {
+            return sanitizeFilename(sanitizedComponents[0])
+        }
+
+        let fileName = sanitizeFilename(sanitizedComponents.last ?? "Imported")
+        let directories = Array(sanitizedComponents.dropLast())
+        return (directories + [fileName]).joined(separator: "/")
+    }
+
+    nonisolated private static func archivePathComponents(for entryPath: String) -> [String] {
+        entryPath
+            .split(separator: "/")
+            .map(String.init)
+            .filter { $0.isEmpty == false && $0 != "." && $0 != ".." }
     }
 
     nonisolated private static func uniqueDestinationURL(directory: URL, preferredName: String) -> URL {

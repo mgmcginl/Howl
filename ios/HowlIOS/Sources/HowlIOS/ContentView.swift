@@ -86,7 +86,7 @@ private struct LibraryView: View {
                         }
                     }
 
-                    Button("Add Files to Library") {
+                    Button("Add Zip or Files") {
                         showLibraryImporter = true
                     }
                     .buttonStyle(.borderedProminent)
@@ -102,7 +102,7 @@ private struct LibraryView: View {
 
                 if filteredEntries.isEmpty {
                     Section("Files") {
-                        Text("No stored `.hwl` or `.funscript` files yet. Add files from OneDrive or Files, and Howl will keep local copies here.")
+                        Text("No stored `.hwl` or `.funscript` files yet. Add a zip, or add files from OneDrive or Files, and Howl will keep local copies here.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
@@ -156,7 +156,7 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.howlHWL, .howlFunscript, .json, .data],
+            forOpeningContentTypes: [.howlZipArchive, .howlHWL, .howlFunscript, .json, .data],
             asCopy: true
         )
         picker.delegate = context.coordinator

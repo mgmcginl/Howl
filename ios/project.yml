@@ -6,6 +6,10 @@ options:
 settings:
   base:
     SWIFT_VERSION: 5.10
+packages:
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation.git
+    from: 0.9.19
 targets:
   HowlIOS:
     type: application
@@ -16,6 +20,7 @@ targets:
       - path: HowlIOS/Resources
     dependencies:
       - sdk: CoreBluetooth.framework
+      - package: ZIPFoundation
     info:
       path: HowlIOS/Info.plist
       properties:
