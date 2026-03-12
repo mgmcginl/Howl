@@ -9,6 +9,11 @@ struct ContentView: View {
                     Label("Player", systemImage: "play.circle")
                 }
 
+            LibraryView()
+                .tabItem {
+                    Label("Library", systemImage: "folder")
+                }
+
             GeneratorView()
                 .tabItem {
                     Label("Generator", systemImage: "waveform.path.ecg")
@@ -23,6 +28,90 @@ struct ContentView: View {
                 .tabItem {
                     Label("Settings", systemImage: "gearshape")
                 }
+        }
+    }
+}
+
+private struct LibraryView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var showFolderPicker = false
+    @State private var searchText = ""
+
+    private var filteredEntries: [AppModel.LibraryEntry] {
+        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return model.libraryEntries }
+        return model.libraryEntries.filter {
+            $0.relativePath.localizedCaseInsensitiveContains(trimmed)
+                || $0.displayName.localizedCaseInsensitiveContains(trimmed)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Library Folder") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(model.libraryFolderName)
+                            .font(.headline)
+                        Text(model.libraryStatusMessage)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button("Choose OneDrive Folder") {
+                        showFolderPicker = true
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    if !model.libraryEntries.isEmpty {
+                        Button("Refresh Library") {
+                            model.refreshLibrary()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+
+                Section(filteredEntries.isEmpty ? "Files" : "Files (\(filteredEntries.count))") {
+                    if filteredEntries.isEmpty {
+                        Text("No supported `.hwl` or `.funscript` files found yet.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(filteredEntries) { entry in
+                            Button {
+                                model.loadLibraryEntry(entry)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry.displayName)
+                                        .foregroundStyle(.primary)
+                                    Text(entry.relativePath)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if let modifiedAt = entry.modifiedAt {
+                                        Text(modifiedAt, style: .date)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Library")
+            .searchable(text: $searchText, prompt: "Search files")
+            .fileImporter(
+                isPresented: $showFolderPicker,
+                allowedContentTypes: [.folder]
+            ) { result in
+                switch result {
+                case .success(let url):
+                    model.chooseLibraryFolder(from: url)
+                case .failure(let error):
+                    model.lastError = error.localizedDescription
+                }
+            }
         }
     }
 }

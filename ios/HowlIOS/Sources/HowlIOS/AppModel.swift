@@ -17,6 +17,20 @@ final class AppModel: ObservableObject {
         let ext: String
     }
 
+    struct LibraryEntry: Identifiable, Equatable {
+        let url: URL
+        let displayName: String
+        let relativePath: String
+        let modifiedAt: Date?
+
+        var id: String { url.absoluteString }
+    }
+
+    private enum LibraryDefaults {
+        static let bookmarkKey = "Howl.LibraryFolderBookmark"
+        static let supportedExtensions = Set(["hwl", "funscript"])
+    }
+
     @Published var sourceName = "No source loaded"
     @Published var duration: TimeInterval?
     @Published var position: TimeInterval = 0
@@ -47,6 +61,9 @@ final class AppModel: ObservableObject {
             reloadCurrentHWLIfNeeded()
         }
     }
+    @Published var libraryFolderName = "No library folder selected"
+    @Published var libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+    @Published var libraryEntries: [LibraryEntry] = []
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
 
@@ -61,9 +78,12 @@ final class AppModel: ObservableObject {
     private let outputBatchSize = Coyote3Protocol.pulseBatchSize
     private let maxHistoryPoints = 36
     private var playbackTickIndex = 0
+    private var libraryFolderURL: URL?
+    private var libraryFolderAccessIsActive = false
 
     init() {
         syncBleLimits()
+        restoreLibraryFolderIfAvailable()
     }
 
     var shapeNames: [String] {
@@ -102,6 +122,55 @@ final class AppModel: ObservableObject {
             lastError = error.localizedDescription
             statusMessage = "Could not load \(url.lastPathComponent)."
         }
+    }
+
+    func chooseLibraryFolder(from url: URL) {
+        let didStartAccess = url.startAccessingSecurityScopedResource()
+
+        do {
+            lastError = nil
+            let bookmark = try url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            UserDefaults.standard.set(bookmark, forKey: LibraryDefaults.bookmarkKey)
+
+            releaseLibraryFolderAccess()
+            libraryFolderURL = url
+            libraryFolderAccessIsActive = didStartAccess
+            libraryFolderName = url.lastPathComponent
+            refreshLibrary()
+        } catch {
+            if didStartAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+            lastError = error.localizedDescription
+            libraryStatusMessage = "Could not remember that folder."
+        }
+    }
+
+    func refreshLibrary() {
+        guard let libraryFolderURL else {
+            libraryEntries = []
+            libraryFolderName = "No library folder selected"
+            libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+            return
+        }
+
+        do {
+            lastError = nil
+            let entries = try loadLibraryEntries(from: libraryFolderURL)
+            libraryEntries = entries.sorted {
+                $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+            }
+            libraryFolderName = libraryFolderURL.lastPathComponent
+            libraryStatusMessage = "Indexed \(entries.count) supported files."
+        } catch {
+            lastError = error.localizedDescription
+            libraryEntries = []
+            libraryStatusMessage = "Could not read \(libraryFolderURL.lastPathComponent)."
+        }
+    }
+
+    func loadLibraryEntry(_ entry: LibraryEntry) {
+        importFile(from: entry.url)
     }
 
     func loadGenerator(playImmediately: Bool = false) {
@@ -194,6 +263,88 @@ final class AppModel: ObservableObject {
         playbackTickIndex = 0
         statusMessage = "Loaded \(source.displayName)."
         renderCurrentFrame()
+    }
+
+    private func restoreLibraryFolderIfAvailable() {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: LibraryDefaults.bookmarkKey) else { return }
+
+        do {
+            var isStale = false
+            let resolvedURL = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+
+            let didStartAccess = resolvedURL.startAccessingSecurityScopedResource()
+            libraryFolderURL = resolvedURL
+            libraryFolderAccessIsActive = didStartAccess
+            libraryFolderName = resolvedURL.lastPathComponent
+
+            if isStale {
+                let refreshedBookmark = try resolvedURL.bookmarkData(
+                    options: .withSecurityScope,
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+                UserDefaults.standard.set(refreshedBookmark, forKey: LibraryDefaults.bookmarkKey)
+            }
+
+            refreshLibrary()
+        } catch {
+            UserDefaults.standard.removeObject(forKey: LibraryDefaults.bookmarkKey)
+            libraryEntries = []
+            libraryFolderName = "No library folder selected"
+            libraryStatusMessage = "Choose a OneDrive folder to browse your scripts."
+        }
+    }
+
+    private func releaseLibraryFolderAccess() {
+        guard libraryFolderAccessIsActive, let libraryFolderURL else { return }
+        libraryFolderURL.stopAccessingSecurityScopedResource()
+        libraryFolderAccessIsActive = false
+    }
+
+    private func loadLibraryEntries(from folderURL: URL) throws -> [LibraryEntry] {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .contentModificationDateKey, .isDirectoryKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: folderURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+
+        var entries: [LibraryEntry] = []
+        let basePath = folderURL.path.hasSuffix("/") ? folderURL.path : folderURL.path + "/"
+
+        for case let fileURL as URL in enumerator {
+            let ext = fileURL.pathExtension.lowercased()
+            guard LibraryDefaults.supportedExtensions.contains(ext) else { continue }
+
+            let values = try fileURL.resourceValues(forKeys: Set(keys))
+            guard values.isRegularFile == true else { continue }
+
+            let fullPath = fileURL.path
+            let relativePath: String
+            if fullPath.hasPrefix(basePath) {
+                relativePath = String(fullPath.dropFirst(basePath.count))
+            } else {
+                relativePath = fileURL.lastPathComponent
+            }
+
+            entries.append(
+                LibraryEntry(
+                    url: fileURL,
+                    displayName: fileURL.lastPathComponent,
+                    relativePath: relativePath,
+                    modifiedAt: values.contentModificationDate
+                )
+            )
+        }
+
+        return entries
     }
 
     private func startPlaybackLoop() {
