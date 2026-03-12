@@ -127,7 +127,10 @@ private struct LibraryView: View {
             .navigationTitle("Library")
             .searchable(text: $searchText, prompt: "Search files")
             .sheet(isPresented: $showLibraryImporter) {
-                ScriptPickerSheet(allowsMultipleSelection: true) { result in
+                ScriptPickerSheet(
+                    allowsMultipleSelection: true,
+                    contentTypes: [.howlZipArchive, .howlHWL, .howlFunscript, .json, .data]
+                ) { result in
                     switch result {
                     case .success(let urls):
                         model.importFilesToLibrary(from: urls)
@@ -148,6 +151,7 @@ private struct LibraryView: View {
 
 private struct ScriptPickerSheet: UIViewControllerRepresentable {
     let allowsMultipleSelection: Bool
+    let contentTypes: [UTType]
     let onComplete: (Result<[URL], Error>) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -156,7 +160,7 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
         let picker = UIDocumentPickerViewController(
-            forOpeningContentTypes: [.howlZipArchive, .howlHWL, .howlFunscript, .json, .data],
+            forOpeningContentTypes: contentTypes,
             asCopy: true
         )
         picker.delegate = context.coordinator
@@ -325,7 +329,10 @@ private struct PlayerView: View {
             }
             .navigationTitle("Howl")
             .sheet(isPresented: $showImporter) {
-                ScriptPickerSheet(allowsMultipleSelection: false) { result in
+                ScriptPickerSheet(
+                    allowsMultipleSelection: false,
+                    contentTypes: [.howlHWL, .howlFunscript, .json, .data]
+                ) { result in
                     switch result {
                     case .success(let urls):
                         guard let url = urls.first else { return }

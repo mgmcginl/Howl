@@ -38,8 +38,8 @@ final class AppModel: ObservableObject {
     }
 
     private enum LibraryDefaults {
-        static let supportedExtensions = Set(["hwl", "funscript"])
-        static let supportedImportExtensions = Set(["hwl", "funscript", "zip"])
+        static let supportedExtensions = Set(["hwl", "funscript", "json"])
+        static let supportedImportExtensions = Set(["hwl", "funscript", "json", "zip"])
         static let favoritesKey = "Howl.LibraryFavorites.Local"
         static let localFolderName = "Imported Scripts"
     }
