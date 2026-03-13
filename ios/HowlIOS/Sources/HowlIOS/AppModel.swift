@@ -161,6 +161,13 @@ final class AppModel: ObservableObject {
         static let localFolderName = "Imported Scripts"
     }
 
+    private enum PlaybackDefaults {
+        static let powerSliderCeilingKey = "Howl.PowerSliderCeiling"
+        static let defaultPowerSliderCeiling = 50
+        static let minimumPowerSliderCeiling = 10
+        static let maximumPowerSliderCeiling = 200
+    }
+
     @Published var sourceName = "No source loaded"
     @Published var duration: TimeInterval?
     @Published var position: TimeInterval = 0
@@ -169,12 +176,36 @@ final class AppModel: ObservableObject {
     @Published var recentPulses: [Pulse] = []
     @Published var powerA = 20 {
         didSet {
+            let clamped = clampedPowerValue(powerA)
+            guard powerA == clamped else {
+                powerA = clamped
+                return
+            }
             syncBleLimits()
         }
     }
     @Published var powerB = 20 {
         didSet {
+            let clamped = clampedPowerValue(powerB)
+            guard powerB == clamped else {
+                powerB = clamped
+                return
+            }
             syncBleLimits()
+        }
+    }
+    @Published var powerSliderCeiling = PlaybackDefaults.defaultPowerSliderCeiling {
+        didSet {
+            let clamped = min(
+                max(powerSliderCeiling, PlaybackDefaults.minimumPowerSliderCeiling),
+                PlaybackDefaults.maximumPowerSliderCeiling
+            )
+            guard powerSliderCeiling == clamped else {
+                powerSliderCeiling = clamped
+                return
+            }
+            clampPowerValuesToCeiling()
+            persistPowerControls()
         }
     }
     @Published var minFrequency = 10.0 {
@@ -202,7 +233,7 @@ final class AppModel: ObservableObject {
             applyFrequencyRangePresetIfNeeded()
         }
     }
-    @Published var outputMode: OutputMode = .preview {
+    @Published var outputMode: OutputMode = .coyote3Live {
         didSet {
             handleOutputModeChanged(from: oldValue)
         }
@@ -252,6 +283,7 @@ final class AppModel: ObservableObject {
     private var isAdjustingFrequencyRange = false
 
     init() {
+        loadPowerControls()
         syncBleLimits()
         prepareLocalLibrary()
         refreshLibrary()
@@ -468,6 +500,14 @@ final class AppModel: ObservableObject {
         favoriteLibraryRelativePaths.contains(entry.relativePath)
     }
 
+    var favoriteLibraryEntries: [LibraryEntry] {
+        libraryEntries
+            .filter { favoriteLibraryRelativePaths.contains($0.relativePath) }
+            .sorted {
+                $0.displayRelativePath.localizedCaseInsensitiveCompare($1.displayRelativePath) == .orderedAscending
+            }
+    }
+
     func isLoadedLibraryEntry(_ entry: LibraryEntry) -> Bool {
         loadedLibraryRelativePath == entry.relativePath
     }
@@ -644,6 +684,10 @@ final class AppModel: ObservableObject {
         loadLibraryEntry(entry, playlistID: currentPlaylistID, playImmediately: isPlaying)
     }
 
+    func loadFavoriteEntry(_ entry: LibraryEntry) {
+        loadLibraryEntry(entry, playImmediately: isPlaying)
+    }
+
     func loadPreviousPlaylistEntry() {
         guard let currentPlaylistIndex, currentPlaylistIndex > 0 else { return }
         loadPlaylistEntry(currentPlaylistEntries[currentPlaylistIndex - 1])
@@ -713,6 +757,18 @@ final class AppModel: ObservableObject {
 
     func updateGeneratorSpeed(_ newValue: Double) {
         generatorConfig.speed = newValue
+    }
+
+    var powerSliderRange: ClosedRange<Double> {
+        0...Double(powerSliderCeiling)
+    }
+
+    func adjustPowerA(by delta: Int) {
+        powerA = clampedPowerValue(powerA + delta)
+    }
+
+    func adjustPowerB(by delta: Int) {
+        powerB = clampedPowerValue(powerB + delta)
     }
 
     func updateGeneratorChannel(
@@ -1321,11 +1377,21 @@ final class AppModel: ObservableObject {
         favoriteLibraryRelativePaths = Set(stored)
     }
 
+    private func loadPowerControls() {
+        let stored = UserDefaults.standard.object(forKey: PlaybackDefaults.powerSliderCeilingKey) as? Int
+        powerSliderCeiling = stored ?? PlaybackDefaults.defaultPowerSliderCeiling
+        clampPowerValuesToCeiling()
+    }
+
     private func persistFavoritesForCurrentLibrary() {
         let sortedFavorites = favoriteLibraryRelativePaths.sorted { lhs, rhs in
             lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
         }
         UserDefaults.standard.set(sortedFavorites, forKey: LibraryDefaults.favoritesKey)
+    }
+
+    private func persistPowerControls() {
+        UserDefaults.standard.set(powerSliderCeiling, forKey: PlaybackDefaults.powerSliderCeilingKey)
     }
 
     private func loadPlaylists() {
@@ -1426,6 +1492,22 @@ final class AppModel: ObservableObject {
             return (min: 18, max: 72)
         case .custom:
             return (min: 10, max: 100)
+        }
+    }
+
+    private func clampedPowerValue(_ value: Int) -> Int {
+        min(max(value, 0), powerSliderCeiling)
+    }
+
+    private func clampPowerValuesToCeiling() {
+        let cappedA = clampedPowerValue(powerA)
+        if powerA != cappedA {
+            powerA = cappedA
+        }
+
+        let cappedB = clampedPowerValue(powerB)
+        if powerB != cappedB {
+            powerB = cappedB
         }
     }
 

@@ -588,7 +588,21 @@ private struct WaveformChannelStrip: View {
 
 private struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var bleManager: CoyoteBluetoothManager
     @EnvironmentObject private var audioEngine: AudioOutputEngine
+
+    private var favoriteEntries: [AppModel.LibraryEntry] {
+        model.favoriteLibraryEntries
+    }
+
+    private var coyoteButtonTitle: String {
+        switch bleManager.state {
+        case .ready, .connecting, .discovering, .scanning, .subscribing, .syncing:
+            return "Disconnect Coyote"
+        case .disconnected, .unavailable:
+            return "Pair with Coyote"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -603,6 +617,9 @@ private struct PlayerView: View {
                         Text("Output: \(model.outputMode.rawValue)")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.tertiary)
+                        Text("Coyote: \(bleManager.state.rawValue)")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(bleManager.isReady ? .green : .secondary)
                         if let playlistName = model.currentPlaylistName {
                             Text("Playlist: \(playlistName)")
                                 .font(.caption.weight(.medium))
@@ -615,6 +632,23 @@ private struct PlayerView: View {
                             Text("Route: \(audioEngine.routeSummary)")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        Button(coyoteButtonTitle) {
+                            if bleManager.state == .disconnected || bleManager.state == .unavailable {
+                                bleManager.connectOrScan()
+                            } else {
+                                bleManager.disconnect()
+                            }
+                        }
+                        .buttonStyle(.bordered)
+
+                        if let batteryLevel = bleManager.batteryLevel {
+                            Text("Battery \(batteryLevel)%")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
                         }
                     }
 
@@ -738,24 +772,79 @@ private struct PlayerView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Power")
                             .font(.headline)
-                        LabeledSlider(
+                        PowerControlRow(
                             title: "Channel A",
                             value: Binding(
-                                get: { Double(model.powerA) },
-                                set: { model.powerA = Int($0.rounded()) }
+                                get: { model.powerA },
+                                set: { model.powerA = $0 }
                             ),
-                            range: 0...200,
-                            format: "%.0f"
+                            range: model.powerSliderRange,
+                            onDecrement: { model.adjustPowerA(by: -1) },
+                            onIncrement: { model.adjustPowerA(by: 1) }
                         )
-                        LabeledSlider(
+                        PowerControlRow(
                             title: "Channel B",
                             value: Binding(
-                                get: { Double(model.powerB) },
-                                set: { model.powerB = Int($0.rounded()) }
+                                get: { model.powerB },
+                                set: { model.powerB = $0 }
                             ),
-                            range: 0...200,
-                            format: "%.0f"
+                            range: model.powerSliderRange,
+                            onDecrement: { model.adjustPowerB(by: -1) },
+                            onIncrement: { model.adjustPowerB(by: 1) }
                         )
+                        Text("Power slider ceiling: \(model.powerSliderCeiling)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !favoriteEntries.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Starred Files")
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(favoriteEntries.count)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 10) {
+                                    ForEach(favoriteEntries) { entry in
+                                        Button {
+                                            model.loadFavoriteEntry(entry)
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                ScriptWaveformThumbnail(preview: model.waveformPreview(for: entry))
+                                                    .frame(width: 148, height: 64)
+                                                Text(entry.displayName)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                                Text(entry.displayRelativePath)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            .frame(width: 156, alignment: .leading)
+                                            .padding(12)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                    .fill(model.isLoadedLibraryEntry(entry) ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.08))
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                    .stroke(model.isLoadedLibraryEntry(entry) ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .task(id: entry.relativePath) {
+                                            model.ensureWaveformPreview(for: entry)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if let error = model.lastError {
@@ -953,6 +1042,22 @@ private struct SettingsView: View {
                             Text(mode.rawValue).tag(mode)
                         }
                     }
+                }
+
+                Section("Power Controls") {
+                    LabeledSlider(
+                        title: "Slider Ceiling",
+                        value: Binding(
+                            get: { Double(model.powerSliderCeiling) },
+                            set: { model.powerSliderCeiling = Int($0.rounded()) }
+                        ),
+                        range: 10...200,
+                        format: "%.0f"
+                    )
+
+                    Text("Howl caps both power sliders at this value so the range you actually use is easier to control.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
 
                 Section("Audio") {
@@ -1163,6 +1268,48 @@ private struct LabeledSlider: View {
                     .font(.caption.monospacedDigit())
             }
             Slider(value: $value, in: range)
+        }
+    }
+}
+
+private struct PowerControlRow: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Double>
+    let onDecrement: () -> Void
+    let onIncrement: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text("\(value)")
+                    .foregroundStyle(.secondary)
+                    .font(.caption.monospacedDigit())
+            }
+
+            HStack(spacing: 10) {
+                Button(action: onDecrement) {
+                    Image(systemName: "minus")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+
+                Slider(
+                    value: Binding(
+                        get: { Double(value) },
+                        set: { value = Int($0.rounded()) }
+                    ),
+                    in: range
+                )
+
+                Button(action: onIncrement) {
+                    Image(systemName: "plus")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.bordered)
+            }
         }
     }
 }
