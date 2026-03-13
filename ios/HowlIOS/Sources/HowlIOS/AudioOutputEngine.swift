@@ -12,6 +12,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     @Published private(set) var statusSummary = "Idle"
     @Published private(set) var routeSummary = "Unknown"
     @Published private(set) var lastError: String?
+    @Published private(set) var keepaliveSummary = "Not running"
 
     private struct PlaybackState {
         var source: (any PulseSource)?
@@ -34,6 +35,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private let renderFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
     private let chunkFrameCount: AVAudioFrameCount = 4_096
     private let targetBufferedChunkCount = 3
+    private static let keepaliveFrequency = 18_500.0
+    private static let keepaliveAmplitude = 0.0025
 
     private var playbackState = PlaybackState()
     private var schedulingTask: Task<Void, Never>?
@@ -119,6 +122,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             ensureSchedulingLoop()
             topOffBuffers()
             statusSummary = "Audio output active"
+            keepaliveSummary = "Output mode active"
             lastError = nil
         } catch {
             lastError = "Audio engine start failed: \(error.localizedDescription)"
@@ -131,11 +135,12 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setCategory(
                 .playback,
                 mode: .default,
-                options: [.mixWithOthers]
+                options: []
             )
         } catch {
             lastError = "Keepalive session category failed: \(error.localizedDescription)"
             statusSummary = "Keepalive failed"
+            keepaliveSummary = "Category setup failed"
             return
         }
 
@@ -144,19 +149,27 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             updateRouteSummary()
             updateKeepaliveState(isActive: true)
             if keepalivePlayer == nil {
-                keepalivePlayer = try AVAudioPlayer(data: Self.makeSilentWAVData())
+                keepalivePlayer = try AVAudioPlayer(data: Self.makeKeepaliveWAVData())
                 keepalivePlayer?.numberOfLoops = -1
                 keepalivePlayer?.volume = 1.0
                 keepalivePlayer?.prepareToPlay()
             }
             if keepalivePlayer?.isPlaying == false {
-                keepalivePlayer?.play()
+                let didStart = keepalivePlayer?.play() ?? false
+                guard didStart else {
+                    lastError = "Keepalive player refused to start."
+                    statusSummary = "Keepalive failed"
+                    keepaliveSummary = "Player did not start"
+                    return
+                }
             }
             statusSummary = "Background keepalive active"
+            keepaliveSummary = "Real keepalive tone playing on \(routeSummary)"
             lastError = nil
         } catch {
             lastError = "Keepalive audio start failed: \(error.localizedDescription)"
             statusSummary = "Keepalive failed"
+            keepaliveSummary = "Audio start threw an error"
         }
     }
 
@@ -178,6 +191,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         }
 
         statusSummary = "Idle"
+        keepaliveSummary = "Not running"
     }
 
     func seek(to position: TimeInterval) {
@@ -379,6 +393,9 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         switch interruptionType {
         case .began:
             statusSummary = playbackState.mode == .keepalive ? "Keepalive interrupted" : "Audio interrupted"
+            if playbackState.mode == .keepalive {
+                keepaliveSummary = "Interrupted by iOS"
+            }
         case .ended:
             reactivateCurrentMode()
         @unknown default:
@@ -427,7 +444,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         return normalized * 0.3
     }
 
-    private static func makeSilentWAVData(
+    private static func makeKeepaliveWAVData(
         sampleRate: Int = 44_100,
         channels: Int = 2,
         bitsPerSample: Int = 16,
@@ -456,7 +473,18 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         data.append(contentsOf: littleEndianBytes(UInt16(bitsPerSample)))
         data.append(contentsOf: Array("data".utf8))
         data.append(contentsOf: littleEndianBytes(UInt32(dataSize)))
-        data.append(Data(count: dataSize))
+        let maxSampleValue = Double(Int16.max)
+        let amplitude = keepaliveAmplitude
+        let radiansPerSample = 2.0 * Double.pi * keepaliveFrequency / Double(sampleRate)
+
+        for frame in 0..<frameCount {
+            let sample = sin(Double(frame) * radiansPerSample) * amplitude
+            let quantized = Int16((sample * maxSampleValue).rounded())
+            let sampleBytes = littleEndianBytes(quantized)
+            for _ in 0..<channels {
+                data.append(contentsOf: sampleBytes)
+            }
+        }
 
         return data
     }

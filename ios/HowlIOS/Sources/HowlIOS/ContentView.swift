@@ -1062,6 +1062,7 @@ private struct SettingsView: View {
 
                 Section("Audio") {
                     LabeledContent("Status", value: audioEngine.statusSummary)
+                    LabeledContent("Keepalive", value: audioEngine.keepaliveSummary)
                     LabeledContent("Route", value: audioEngine.routeSummary)
                     Toggle("Keep Live BLE Alive in Background", isOn: $model.enableLiveBackgroundKeepalive)
                     Text("Use Audio Output to test real background playback. BLE live control is still a separate path and may suspend when the app leaves the foreground.")
