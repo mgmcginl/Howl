@@ -187,6 +187,11 @@ final class AppModel: ObservableObject {
             reloadCurrentHWLIfNeeded()
         }
     }
+    @Published var enableLiveBackgroundKeepalive = true {
+        didSet {
+            syncBackgroundKeepalive()
+        }
+    }
     @Published var libraryFolderName = LibraryDefaults.localFolderName
     @Published var libraryStatusMessage = "Stored inside Howl on this iPhone."
     @Published var libraryEntries: [LibraryEntry] = []
@@ -563,6 +568,7 @@ final class AppModel: ObservableObject {
             ? "Playing \(sourceName) while waiting for a ready Coyote 3."
             : "Playing \(sourceName)."
         syncAudioTransport()
+        syncBackgroundKeepalive()
         startPlaybackLoop()
     }
 
@@ -1215,11 +1221,13 @@ final class AppModel: ObservableObject {
 
         if outputMode == .preview {
             bleManager.clearStagedPacket()
+            syncBackgroundKeepalive()
             return
         }
 
         syncBleLimits()
         syncAudioTransport()
+        syncBackgroundKeepalive()
         renderCurrentFrame()
     }
 
@@ -1324,12 +1332,16 @@ final class AppModel: ObservableObject {
 
     private func syncAudioTransport() {
         guard outputMode == .audio else {
-            audioEngine.stop()
+            if shouldKeepLiveBackgroundAlive == false {
+                audioEngine.stop()
+            }
             return
         }
 
         guard let source = loadedSource, isPlaying else {
-            audioEngine.stop()
+            if shouldKeepLiveBackgroundAlive == false {
+                audioEngine.stop()
+            }
             return
         }
 
@@ -1341,6 +1353,23 @@ final class AppModel: ObservableObject {
             powerA: powerA,
             powerB: powerB
         )
+    }
+
+    private var shouldKeepLiveBackgroundAlive: Bool {
+        enableLiveBackgroundKeepalive
+            && outputMode == .coyote3Live
+            && isPlaying
+            && loadedSource != nil
+    }
+
+    private func syncBackgroundKeepalive() {
+        guard outputMode != .audio else { return }
+
+        if shouldKeepLiveBackgroundAlive {
+            audioEngine.startKeepalive()
+        } else {
+            audioEngine.stop()
+        }
     }
 
     private func buildCoyoteBatch(source: any PulseSource, at time: TimeInterval) -> [Pulse]? {

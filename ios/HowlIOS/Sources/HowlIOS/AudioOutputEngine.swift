@@ -3,6 +3,12 @@ import Foundation
 
 @MainActor
 final class AudioOutputEngine: NSObject, ObservableObject {
+    enum Mode {
+        case idle
+        case output
+        case keepalive
+    }
+
     @Published private(set) var statusSummary = "Idle"
     @Published private(set) var routeSummary = "Unknown"
     @Published private(set) var lastError: String?
@@ -18,6 +24,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         var phaseA: Double = 0
         var phaseB: Double = 0
         var isActive = false
+        var mode: Mode = .idle
     }
 
     private let session = AVAudioSession.sharedInstance()
@@ -82,7 +89,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 powerA: powerA,
                 powerB: powerB,
                 resetPlaybackCursor: shouldResetPlaybackCursor,
-                isActive: true
+                isActive: true,
+                mode: .output
             )
 
             if engine.isRunning == false {
@@ -100,6 +108,42 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         } catch {
             lastError = "Audio engine start failed: \(error.localizedDescription)"
             statusSummary = "Audio output failed"
+        }
+    }
+
+    func startKeepalive() {
+        do {
+            try session.setCategory(
+                .playback,
+                mode: .default,
+                options: [.allowAirPlay, .allowBluetoothA2DP]
+            )
+        } catch {
+            lastError = "Keepalive session category failed: \(error.localizedDescription)"
+            statusSummary = "Keepalive failed"
+            return
+        }
+
+        do {
+            try session.setActive(true)
+            updateRouteSummary()
+            updateKeepaliveState(isActive: true)
+
+            if engine.isRunning == false {
+                try engine.start()
+            }
+
+            if playerNode.isPlaying == false {
+                playerNode.play()
+            }
+
+            ensureSchedulingLoop()
+            topOffBuffers()
+            statusSummary = "Background keepalive active"
+            lastError = nil
+        } catch {
+            lastError = "Keepalive audio start failed: \(error.localizedDescription)"
+            statusSummary = "Keepalive failed"
         }
     }
 
@@ -194,9 +238,16 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         stateLock.unlock()
 
         for frame in 0..<Int(chunkFrameCount) {
-            guard state.isActive, let source = state.source else {
+            guard state.isActive else {
                 leftBuffer[frame] = 0
                 rightBuffer[frame] = 0
+                continue
+            }
+
+            guard state.mode == .output, let source = state.source else {
+                leftBuffer[frame] = 0
+                rightBuffer[frame] = 0
+                state.sampleCursor += 1
                 continue
             }
 
@@ -248,7 +299,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         powerA: Int,
         powerB: Int,
         resetPlaybackCursor: Bool,
-        isActive: Bool
+        isActive: Bool,
+        mode: Mode
     ) {
         stateLock.lock()
         playbackState.source = source
@@ -257,6 +309,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         playbackState.gainA = Self.channelGain(for: powerA)
         playbackState.gainB = Self.channelGain(for: powerB)
         playbackState.isActive = isActive
+        playbackState.mode = mode
 
         if resetPlaybackCursor {
             playbackState.position = position
@@ -270,6 +323,23 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private func updateActive(_ isActive: Bool) {
         stateLock.lock()
         playbackState.isActive = isActive
+        if isActive == false {
+            playbackState.mode = .idle
+            playbackState.source = nil
+        }
+        stateLock.unlock()
+    }
+
+    private func updateKeepaliveState(isActive: Bool) {
+        stateLock.lock()
+        playbackState.isActive = isActive
+        playbackState.mode = isActive ? .keepalive : .idle
+        playbackState.source = nil
+        if isActive {
+            playbackState.sampleCursor = 0
+            playbackState.phaseA = 0
+            playbackState.phaseB = 0
+        }
         stateLock.unlock()
     }
 

@@ -733,7 +733,11 @@ private struct SettingsView: View {
                 Section("Audio") {
                     LabeledContent("Status", value: audioEngine.statusSummary)
                     LabeledContent("Route", value: audioEngine.routeSummary)
+                    Toggle("Keep Live BLE Alive in Background", isOn: $model.enableLiveBackgroundKeepalive)
                     Text("Use Audio Output to test real background playback. BLE live control is still a separate path and may suspend when the app leaves the foreground.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("When enabled, Live Coyote 3 keeps a silent background audio session running so iPhone is less likely to suspend the app the moment you switch away.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
 
