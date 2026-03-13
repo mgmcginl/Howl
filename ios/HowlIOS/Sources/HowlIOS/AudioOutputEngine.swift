@@ -51,6 +51,18 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             name: AVAudioSession.routeChangeNotification,
             object: session
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption(_:)),
+            name: AVAudioSession.interruptionNotification,
+            object: session
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: session
+        )
     }
 
     deinit {
@@ -184,8 +196,10 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     }
 
     private func configureEngine() {
-        engine.attach(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: renderFormat)
+        if playerNode.engine == nil {
+            engine.attach(playerNode)
+            engine.connect(playerNode, to: engine.mainMixerNode, format: renderFormat)
+        }
         engine.prepare()
     }
 
@@ -348,6 +362,59 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     @objc
     private func handleRouteChange(_: Notification) {
         updateRouteSummary()
+    }
+
+    @objc
+    private func handleInterruption(_ notification: Notification) {
+        updateRouteSummary()
+
+        guard
+            let userInfo = notification.userInfo,
+            let rawType = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+            let interruptionType = AVAudioSession.InterruptionType(rawValue: rawType)
+        else {
+            return
+        }
+
+        switch interruptionType {
+        case .began:
+            statusSummary = playbackState.mode == .keepalive ? "Keepalive interrupted" : "Audio interrupted"
+        case .ended:
+            reactivateCurrentMode()
+        @unknown default:
+            break
+        }
+    }
+
+    @objc
+    private func handleMediaServicesReset() {
+        configureEngine()
+        reactivateCurrentMode()
+    }
+
+    private func reactivateCurrentMode() {
+        stateLock.lock()
+        let state = playbackState
+        stateLock.unlock()
+
+        guard state.isActive else { return }
+
+        switch state.mode {
+        case .keepalive:
+            startKeepalive()
+        case .output:
+            guard let source = state.source else { return }
+            start(
+                source: source,
+                position: state.position,
+                minFrequency: state.minFrequency,
+                maxFrequency: state.maxFrequency,
+                powerA: Int((state.gainA / 0.3 * 200).rounded()),
+                powerB: Int((state.gainB / 0.3 * 200).rounded())
+            )
+        case .idle:
+            break
+        }
     }
 
     private func updateRouteSummary() {

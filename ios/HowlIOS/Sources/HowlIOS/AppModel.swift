@@ -773,6 +773,19 @@ final class AppModel: ObservableObject {
         lastError = nil
     }
 
+    func handleScenePhaseChange(_ phase: ScenePhase) {
+        switch phase {
+        case .active, .inactive, .background:
+            if outputMode == .audio {
+                syncAudioTransport()
+            } else {
+                syncBackgroundKeepalive()
+            }
+        @unknown default:
+            break
+        }
+    }
+
     private func load(source: any PulseSource) {
         stop()
         loadedSource = source
