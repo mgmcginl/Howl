@@ -71,7 +71,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setCategory(
                 .playback,
                 mode: .default,
-                options: [.allowAirPlay, .allowBluetoothA2DP]
+                options: []
             )
         } catch {
             lastError = "Audio session category failed: \(error.localizedDescription)"
@@ -119,7 +119,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setCategory(
                 .playback,
                 mode: .default,
-                options: [.allowAirPlay, .allowBluetoothA2DP]
+                options: [.mixWithOthers]
             )
         } catch {
             lastError = "Keepalive session category failed: \(error.localizedDescription)"
