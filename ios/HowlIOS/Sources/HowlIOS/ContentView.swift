@@ -55,12 +55,8 @@ private struct LibraryView: View {
         filteredEntries.filter { model.isFavorite($0) }.sorted(by: librarySort)
     }
 
-    private var nonFavoriteEntries: [AppModel.LibraryEntry] {
-        filteredEntries.filter { !model.isFavorite($0) }
-    }
-
     private var libraryTree: AppModel.LibraryTree {
-        model.libraryTree(for: nonFavoriteEntries)
+        model.libraryTree(for: filteredEntries)
     }
 
     private var isSearching: Bool {
@@ -137,8 +133,8 @@ private struct LibraryView: View {
                     }
 
                     if isSearching {
-                        Section("Search Results (\(nonFavoriteEntries.count))") {
-                            ForEach(nonFavoriteEntries.sorted(by: librarySort)) { entry in
+                        Section("Search Results (\(filteredEntries.count))") {
+                            ForEach(filteredEntries.sorted(by: librarySort)) { entry in
                                 LibraryEntryRow(entry: entry, currentPlaylistID: nil) {
                                     beginCreatePlaylist(with: $0)
                                 }

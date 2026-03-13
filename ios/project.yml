@@ -21,6 +21,7 @@ targets:
     dependencies:
       - sdk: CoreBluetooth.framework
       - sdk: AVFoundation.framework
+      - sdk: MediaPlayer.framework
       - package: ZIPFoundation
     info:
       path: HowlIOS/Info.plist

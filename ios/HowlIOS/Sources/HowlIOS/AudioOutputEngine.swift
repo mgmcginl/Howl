@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import MediaPlayer
 
 @MainActor
 final class AudioOutputEngine: NSObject, ObservableObject {
@@ -123,6 +124,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             topOffBuffers()
             statusSummary = "Audio output active"
             keepaliveSummary = "Output mode active"
+            updateNowPlaying(title: "Howl Audio Output", isLive: true)
             lastError = nil
         } catch {
             lastError = "Audio engine start failed: \(error.localizedDescription)"
@@ -165,6 +167,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             }
             statusSummary = "Background keepalive active"
             keepaliveSummary = "Real keepalive tone playing on \(routeSummary)"
+            updateNowPlaying(title: "Howl Live BLE Keepalive", isLive: true)
             lastError = nil
         } catch {
             lastError = "Keepalive audio start failed: \(error.localizedDescription)"
@@ -192,6 +195,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
 
         statusSummary = "Idle"
         keepaliveSummary = "Not running"
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
     }
 
     func seek(to position: TimeInterval) {
@@ -437,6 +441,14 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private func updateRouteSummary() {
         let outputs = session.currentRoute.outputs.map(\.portName)
         routeSummary = outputs.isEmpty ? "No active route" : outputs.joined(separator: ", ")
+    }
+
+    private func updateNowPlaying(title: String, isLive: Bool) {
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: title,
+            MPNowPlayingInfoPropertyIsLiveStream: isLive,
+            MPNowPlayingInfoPropertyPlaybackRate: 1.0
+        ]
     }
 
     private static func channelGain(for power: Int) -> Double {

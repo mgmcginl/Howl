@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 import ZIPFoundation
 
 private func normalizedLibraryDisplayPathComponents(from components: [String]) -> [String] {
@@ -281,6 +282,7 @@ final class AppModel: ObservableObject {
     private var analysisTasks: [String: Task<Void, Never>] = [:]
     private var waveformPreviewTasks: [String: Task<Void, Never>] = [:]
     private var isAdjustingFrequencyRange = false
+    private var liveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init() {
         loadPowerControls()
@@ -812,6 +814,7 @@ final class AppModel: ObservableObject {
         isPlaying = false
         playbackTask?.cancel()
         playbackTask = nil
+        endLiveBackgroundTask()
         audioEngine.stop()
         sendSilenceIfNeeded()
         currentPulse = .silence
@@ -831,7 +834,15 @@ final class AppModel: ObservableObject {
 
     func handleScenePhaseChange(_ phase: ScenePhase) {
         switch phase {
-        case .active, .inactive, .background:
+        case .active:
+            endLiveBackgroundTask()
+            if outputMode == .audio {
+                syncAudioTransport()
+            } else {
+                syncBackgroundKeepalive()
+            }
+        case .inactive, .background:
+            syncLifecycleBackgroundTask(isEnteringBackground: true)
             if outputMode == .audio {
                 syncAudioTransport()
             } else {
@@ -1801,6 +1812,10 @@ final class AppModel: ObservableObject {
             && loadedSource != nil
     }
 
+    private var shouldRequestLifecycleBackgroundTask: Bool {
+        isPlaying && loadedSource != nil && (outputMode == .audio || shouldKeepLiveBackgroundAlive)
+    }
+
     private func syncBackgroundKeepalive() {
         guard outputMode != .audio else { return }
 
@@ -1809,6 +1824,34 @@ final class AppModel: ObservableObject {
         } else {
             audioEngine.stop()
         }
+    }
+
+    private func syncLifecycleBackgroundTask(isEnteringBackground: Bool) {
+        guard isEnteringBackground else {
+            endLiveBackgroundTask()
+            return
+        }
+
+        if shouldRequestLifecycleBackgroundTask {
+            beginLiveBackgroundTaskIfNeeded()
+        } else {
+            endLiveBackgroundTask()
+        }
+    }
+
+    private func beginLiveBackgroundTaskIfNeeded() {
+        guard liveBackgroundTask == .invalid else { return }
+        liveBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "HowlLivePlayback") { [weak self] in
+            Task { @MainActor in
+                self?.endLiveBackgroundTask()
+            }
+        }
+    }
+
+    private func endLiveBackgroundTask() {
+        guard liveBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(liveBackgroundTask)
+        liveBackgroundTask = .invalid
     }
 
     private func buildCoyoteBatch(source: any PulseSource, at time: TimeInterval) -> [Pulse]? {
