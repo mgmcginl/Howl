@@ -346,6 +346,12 @@ private struct LibraryEntryRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
+            ScriptWaveformThumbnail(preview: model.waveformPreview(for: entry))
+                .frame(width: 96, height: 52)
+                .task(id: entry.relativePath) {
+                    model.ensureWaveformPreview(for: entry)
+                }
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.displayName)
                     .foregroundStyle(.primary)
@@ -358,10 +364,18 @@ private struct LibraryEntryRow: View {
                         .foregroundStyle(.tertiary)
                 }
 
-                if model.isLoadedLibraryEntry(entry) {
-                    Text("Loaded")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.accentColor)
+                HStack(spacing: 8) {
+                    if let preview = model.waveformPreview(for: entry), preview.channelsDiffer {
+                        Text("A/B Split")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                    }
+
+                    if model.isLoadedLibraryEntry(entry) {
+                        Text("Loaded")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
                 }
             }
 
@@ -439,6 +453,99 @@ private struct LibraryEntryRow: View {
     }
 }
 
+private struct ScriptWaveformThumbnail: View {
+    let preview: AppModel.LibraryWaveformPreview?
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.secondary.opacity(0.08))
+            .overlay {
+                if let preview {
+                    VStack(spacing: 4) {
+                        WaveformChannelStrip(
+                            label: "A",
+                            amplitude: preview.amplitudeA,
+                            frequency: preview.frequencyA,
+                            tint: .orange
+                        )
+                        WaveformChannelStrip(
+                            label: "B",
+                            amplitude: preview.amplitudeB,
+                            frequency: preview.frequencyB,
+                            tint: .blue
+                        )
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 5)
+                } else {
+                    VStack(spacing: 6) {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.15))
+                            .frame(height: 8)
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.12))
+                            .frame(height: 8)
+                    }
+                    .padding(.horizontal, 10)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct WaveformChannelStrip: View {
+    let label: String
+    let amplitude: [Float]
+    let frequency: [Float]
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(width: 8)
+
+            GeometryReader { geometry in
+                ZStack {
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: geometry.size.height / 2))
+                        path.addLine(to: CGPoint(x: geometry.size.width, y: geometry.size.height / 2))
+                    }
+                    .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+
+                    waveformPath(for: amplitude, in: geometry.size)
+                        .stroke(tint.opacity(0.95), style: StrokeStyle(lineWidth: 1.8, lineJoin: .round, lineCap: .round))
+
+                    waveformPath(for: frequency, in: geometry.size)
+                        .stroke(tint.opacity(0.35), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round, lineCap: .round))
+                }
+            }
+        }
+    }
+
+    private func waveformPath(for samples: [Float], in size: CGSize) -> Path {
+        var path = Path()
+        guard let first = samples.first else { return path }
+        let maxX = max(size.width, 1)
+        let maxY = max(size.height, 1)
+
+        for (index, sample) in samples.enumerated() {
+            let progress = samples.count == 1 ? 0 : CGFloat(index) / CGFloat(samples.count - 1)
+            let x = progress * maxX
+            let y = (1 - CGFloat(sample.clamped(to: 0...1))) * maxY
+            if index == 0 {
+                let startY = (1 - CGFloat(first.clamped(to: 0...1))) * maxY
+                path.move(to: CGPoint(x: x, y: startY))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
+
+        return path
+    }
+}
+
 private struct PlayerView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var audioEngine: AudioOutputEngine
@@ -468,6 +575,84 @@ private struct PlayerView: View {
                             Text("Route: \(audioEngine.routeSummary)")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    if let playlistName = model.currentPlaylistName {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Playlist")
+                                        .font(.headline)
+                                    Text(playlistName)
+                                        .font(.subheadline.weight(.semibold))
+                                    if let currentIndex = model.currentPlaylistIndex {
+                                        Text("Track \(currentIndex + 1) of \(model.currentPlaylistEntries.count)")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer()
+
+                                HStack(spacing: 8) {
+                                    Button {
+                                        model.loadPreviousPlaylistEntry()
+                                    } label: {
+                                        Image(systemName: "backward.fill")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(!model.canLoadPreviousPlaylistEntry)
+
+                                    Button {
+                                        model.loadNextPlaylistEntry()
+                                    } label: {
+                                        Image(systemName: "forward.fill")
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(!model.canLoadNextPlaylistEntry)
+                                }
+                            }
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(model.currentPlaylistEntries) { entry in
+                                        Button {
+                                            model.loadPlaylistEntry(entry)
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(entry.displayName)
+                                                    .font(.caption.weight(.semibold))
+                                                    .lineLimit(1)
+                                                if let preview = model.waveformPreview(for: entry) {
+                                                    Text(preview.channelsDiffer ? "A/B Split" : "A/B Matched")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.secondary)
+                                                } else {
+                                                    Text("Preview loading")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.tertiary)
+                                                }
+                                            }
+                                            .frame(width: 132, alignment: .leading)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 10)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                    .fill(model.isLoadedLibraryEntry(entry) ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.08))
+                                            )
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                    .stroke(model.isLoadedLibraryEntry(entry) ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .task(id: entry.relativePath) {
+                                            model.ensureWaveformPreview(for: entry)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 

@@ -124,6 +124,23 @@ final class AppModel: ObservableObject {
         var entryRelativePaths: [String]
     }
 
+    struct LibraryWaveformPreview: Equatable, Sendable {
+        let amplitudeA: [Float]
+        let amplitudeB: [Float]
+        let frequencyA: [Float]
+        let frequencyB: [Float]
+
+        var channelsDiffer: Bool {
+            let amplitudeDelta = zip(amplitudeA, amplitudeB).reduce(Float.zero) { partial, pair in
+                partial + abs(pair.0 - pair.1)
+            }
+            let frequencyDelta = zip(frequencyA, frequencyB).reduce(Float.zero) { partial, pair in
+                partial + abs(pair.0 - pair.1)
+            }
+            return (amplitudeDelta + frequencyDelta) > 1.0
+        }
+    }
+
     private enum LibraryDefaults {
         static let supportedExtensions = Set(["hwl", "funscript", "json"])
         static let supportedImportExtensions = Set(["hwl", "funscript", "json", "zip"])
@@ -184,6 +201,7 @@ final class AppModel: ObservableObject {
     @Published var selectedActivity: DemoActivity = .tease
     @Published var hwlPlaybackProfile: HWLPlaybackProfile = .smooth {
         didSet {
+            invalidateWaveformPreviews()
             reloadCurrentHWLIfNeeded()
         }
     }
@@ -198,6 +216,7 @@ final class AppModel: ObservableObject {
     @Published var isRefreshingLibrary = false
     @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
     @Published private(set) var playlists: [Playlist] = []
+    @Published private(set) var libraryWaveformPreviews: [String: LibraryWaveformPreview] = [:]
     @Published private(set) var expandedLibraryFolderPaths: Set<String> = []
     @Published private(set) var expandedPlaylistIDs: Set<UUID> = []
     @Published private(set) var loadedLibraryRelativePath: String?
@@ -217,6 +236,7 @@ final class AppModel: ObservableObject {
     private var playbackTickIndex = 0
     private var libraryRefreshTask: Task<Void, Never>?
     private var activeLibraryRefreshID: UUID?
+    private var waveformPreviewTasks: [String: Task<Void, Never>] = [:]
     private var isAdjustingFrequencyRange = false
 
     init() {
@@ -312,6 +332,7 @@ final class AppModel: ObservableObject {
                 self.libraryEntries = entries.sorted {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
                 }
+                self.pruneWaveformPreviews()
                 self.libraryFolderName = LibraryDefaults.localFolderName
                 self.libraryStatusMessage = importedCount == 0
                     ? "No supported `.hwl` or `.funscript` files were found in that import."
@@ -361,6 +382,7 @@ final class AppModel: ObservableObject {
                 self.libraryEntries = entries.sorted {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
                 }
+                self.pruneWaveformPreviews()
                 self.libraryFolderName = folderName
                 self.libraryStatusMessage = entries.isEmpty
                     ? "No supported files found in \(folderName)."
@@ -376,10 +398,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func loadLibraryEntry(_ entry: LibraryEntry, playlistID: UUID? = nil) {
+    func loadLibraryEntry(_ entry: LibraryEntry, playlistID: UUID? = nil, playImmediately: Bool = false) {
         guard importFile(from: entry.url) else { return }
         loadedLibraryRelativePath = entry.relativePath
         currentPlaylistID = playlistID
+        if playImmediately {
+            play()
+        }
     }
 
     func deleteLibraryEntry(_ entry: LibraryEntry) {
@@ -397,6 +422,9 @@ final class AppModel: ObservableObject {
                 loadedLibraryRelativePath = nil
                 currentPlaylistID = nil
             }
+
+            libraryWaveformPreviews.removeValue(forKey: entry.relativePath)
+            waveformPreviewTasks.removeValue(forKey: entry.relativePath)?.cancel()
 
             persistFavoritesForCurrentLibrary()
             persistPlaylists()
@@ -426,6 +454,39 @@ final class AppModel: ObservableObject {
 
     func isLoadedLibraryEntry(_ entry: LibraryEntry) -> Bool {
         loadedLibraryRelativePath == entry.relativePath
+    }
+
+    func waveformPreview(for entry: LibraryEntry) -> LibraryWaveformPreview? {
+        libraryWaveformPreviews[entry.relativePath]
+    }
+
+    func ensureWaveformPreview(for entry: LibraryEntry) {
+        guard libraryWaveformPreviews[entry.relativePath] == nil else { return }
+        guard waveformPreviewTasks[entry.relativePath] == nil else { return }
+
+        let profile = hwlPlaybackProfile
+        waveformPreviewTasks[entry.relativePath] = Task { [weak self] in
+            let previewTask = Task.detached(priority: .utility) {
+                try Self.generateWaveformPreview(for: entry, hwlProfile: profile)
+            }
+
+            defer {
+                previewTask.cancel()
+            }
+
+            do {
+                let preview = try await previewTask.value
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard self.libraryEntries.contains(where: { $0.relativePath == entry.relativePath }) else { return }
+                self.libraryWaveformPreviews[entry.relativePath] = preview
+                self.waveformPreviewTasks.removeValue(forKey: entry.relativePath)
+            } catch is CancellationError {
+                self?.waveformPreviewTasks.removeValue(forKey: entry.relativePath)
+            } catch {
+                self?.waveformPreviewTasks.removeValue(forKey: entry.relativePath)
+            }
+        }
     }
 
     func libraryTree(for entries: [LibraryEntry]) -> LibraryTree {
@@ -505,6 +566,44 @@ final class AppModel: ObservableObject {
     var currentPlaylistName: String? {
         guard let currentPlaylistID else { return nil }
         return playlists.first(where: { $0.id == currentPlaylistID })?.name
+    }
+
+    var currentPlaylistEntries: [LibraryEntry] {
+        guard let currentPlaylistID,
+              let playlist = playlists.first(where: { $0.id == currentPlaylistID })
+        else {
+            return []
+        }
+        return entries(for: playlist)
+    }
+
+    var currentPlaylistIndex: Int? {
+        guard let loadedLibraryRelativePath else { return nil }
+        return currentPlaylistEntries.firstIndex { $0.relativePath == loadedLibraryRelativePath }
+    }
+
+    var canLoadPreviousPlaylistEntry: Bool {
+        guard let currentPlaylistIndex else { return false }
+        return currentPlaylistIndex > 0
+    }
+
+    var canLoadNextPlaylistEntry: Bool {
+        guard let currentPlaylistIndex else { return false }
+        return currentPlaylistIndex < currentPlaylistEntries.count - 1
+    }
+
+    func loadPlaylistEntry(_ entry: LibraryEntry) {
+        loadLibraryEntry(entry, playlistID: currentPlaylistID, playImmediately: isPlaying)
+    }
+
+    func loadPreviousPlaylistEntry() {
+        guard let currentPlaylistIndex, currentPlaylistIndex > 0 else { return }
+        loadPlaylistEntry(currentPlaylistEntries[currentPlaylistIndex - 1])
+    }
+
+    func loadNextPlaylistEntry() {
+        guard let currentPlaylistIndex, currentPlaylistIndex < currentPlaylistEntries.count - 1 else { return }
+        loadPlaylistEntry(currentPlaylistEntries[currentPlaylistIndex + 1])
     }
 
     func loadGenerator(playImmediately: Bool = false) {
@@ -604,6 +703,24 @@ final class AppModel: ObservableObject {
         statusMessage = "Loaded \(source.displayName)."
         renderCurrentFrame()
         syncAudioTransport()
+    }
+
+    private func invalidateWaveformPreviews() {
+        for task in waveformPreviewTasks.values {
+            task.cancel()
+        }
+        waveformPreviewTasks.removeAll()
+        libraryWaveformPreviews.removeAll()
+    }
+
+    private func pruneWaveformPreviews() {
+        let validRelativePaths = Set(libraryEntries.map(\.relativePath))
+        libraryWaveformPreviews = libraryWaveformPreviews.filter { validRelativePaths.contains($0.key) }
+        let invalidTaskPaths = waveformPreviewTasks.keys.filter { !validRelativePaths.contains($0) }
+        for relativePath in invalidTaskPaths {
+            waveformPreviewTasks[relativePath]?.cancel()
+            waveformPreviewTasks.removeValue(forKey: relativePath)
+        }
     }
 
     private func prepareLocalLibrary() {
@@ -726,6 +843,67 @@ final class AppModel: ObservableObject {
         }
 
         return ImportedFile(data: fileData, displayName: displayName, ext: ext)
+    }
+
+    nonisolated private static func generateWaveformPreview(
+        for entry: LibraryEntry,
+        hwlProfile: HWLPlaybackProfile
+    ) throws -> LibraryWaveformPreview {
+        let importedFile = try readImportedFile(from: entry.url)
+        let source: any PulseSource
+
+        switch importedFile.ext {
+        case "hwl":
+            source = try HWLPulseSource(
+                data: importedFile.data,
+                displayName: importedFile.displayName,
+                settings: HWLSettings(profile: hwlProfile)
+            )
+        case "funscript", "json":
+            source = try FunscriptPulseSource(
+                data: importedFile.data,
+                displayName: importedFile.displayName
+            )
+        default:
+            throw HowlCoreError.unsupportedFileType(importedFile.ext)
+        }
+
+        return makeWaveformPreview(from: source)
+    }
+
+    nonisolated private static func makeWaveformPreview(
+        from source: any PulseSource,
+        sampleCount: Int = 40
+    ) -> LibraryWaveformPreview {
+        let duration = max(source.duration ?? 6.0, 0.25)
+        let previewDuration = source.shouldLoop ? min(duration, 6.0) : duration
+
+        var amplitudeA: [Float] = []
+        var amplitudeB: [Float] = []
+        var frequencyA: [Float] = []
+        var frequencyB: [Float] = []
+
+        amplitudeA.reserveCapacity(sampleCount)
+        amplitudeB.reserveCapacity(sampleCount)
+        frequencyA.reserveCapacity(sampleCount)
+        frequencyB.reserveCapacity(sampleCount)
+
+        for index in 0..<sampleCount {
+            let progress = sampleCount == 1 ? 0.0 : Double(index) / Double(sampleCount - 1)
+            let time = previewDuration * progress
+            let pulse = source.pulse(at: time)
+            amplitudeA.append(pulse.ampA.clamped(to: 0...1))
+            amplitudeB.append(pulse.ampB.clamped(to: 0...1))
+            frequencyA.append(pulse.freqA.clamped(to: 0...1))
+            frequencyB.append(pulse.freqB.clamped(to: 0...1))
+        }
+
+        return LibraryWaveformPreview(
+            amplitudeA: amplitudeA,
+            amplitudeB: amplitudeB,
+            frequencyA: frequencyA,
+            frequencyB: frequencyB
+        )
     }
 
     nonisolated private static func copyFilesToLocalLibrary(from urls: [URL]) throws -> Int {
@@ -1400,5 +1578,11 @@ final class AppModel: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+}
+
+private extension BinaryFloatingPoint {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
