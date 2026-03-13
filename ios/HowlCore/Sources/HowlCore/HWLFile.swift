@@ -64,6 +64,331 @@ public enum HWLFile {
         data.append(UInt8((bits >> 16) & 0xFF))
         data.append(UInt8((bits >> 24) & 0xFF))
     }
+
+    public static func analyze(_ pulses: [Pulse]) -> HWLAnalysis {
+        guard !pulses.isEmpty else {
+            return HWLAnalysis(
+                pulseCount: 0,
+                duration: 0,
+                averageAmplitudeA: 0,
+                averageAmplitudeB: 0,
+                peakAmplitudeA: 0,
+                peakAmplitudeB: 0,
+                averageFrequencyA: 0,
+                averageFrequencyB: 0,
+                activeRatio: 0,
+                abruptness: 0,
+                channelDifference: 0
+            )
+        }
+
+        let pulseCount = pulses.count
+        let duration = Double(pulseCount) * pulseDuration
+
+        let averageAmplitudeA = pulses.reduce(0.0) { $0 + Double($1.ampA) } / Double(pulseCount)
+        let averageAmplitudeB = pulses.reduce(0.0) { $0 + Double($1.ampB) } / Double(pulseCount)
+        let peakAmplitudeA = pulses.map(\.ampA).max().map(Double.init) ?? 0
+        let peakAmplitudeB = pulses.map(\.ampB).max().map(Double.init) ?? 0
+        let averageFrequencyA = pulses.reduce(0.0) { $0 + Double($1.freqA) } / Double(pulseCount)
+        let averageFrequencyB = pulses.reduce(0.0) { $0 + Double($1.freqB) } / Double(pulseCount)
+        let activeRatio = Double(
+            pulses.filter { $0.ampA > 0.12 || $0.ampB > 0.12 }.count
+        ) / Double(pulseCount)
+
+        let abruptness: Double
+        let channelDifference: Double
+
+        if pulses.count > 1 {
+            let transitions = zip(pulses, pulses.dropFirst())
+            abruptness = transitions.reduce(0.0) { partial, pair in
+                let amplitudeStep =
+                    abs(Double(pair.1.ampA - pair.0.ampA))
+                    + abs(Double(pair.1.ampB - pair.0.ampB))
+                let frequencyStep =
+                    abs(Double(pair.1.freqA - pair.0.freqA))
+                    + abs(Double(pair.1.freqB - pair.0.freqB))
+                return partial + (amplitudeStep * 0.7) + (frequencyStep * 0.3)
+            } / Double(pulseCount - 1)
+
+            channelDifference = pulses.reduce(0.0) { partial, pulse in
+                partial
+                    + abs(Double(pulse.ampA - pulse.ampB)) * 0.65
+                    + abs(Double(pulse.freqA - pulse.freqB)) * 0.35
+            } / Double(pulseCount)
+        } else {
+            abruptness = 0
+            channelDifference =
+                abs(Double(pulses[0].ampA - pulses[0].ampB)) * 0.65
+                + abs(Double(pulses[0].freqA - pulses[0].freqB)) * 0.35
+        }
+
+        return HWLAnalysis(
+            pulseCount: pulseCount,
+            duration: duration,
+            averageAmplitudeA: averageAmplitudeA,
+            averageAmplitudeB: averageAmplitudeB,
+            peakAmplitudeA: peakAmplitudeA,
+            peakAmplitudeB: peakAmplitudeB,
+            averageFrequencyA: averageFrequencyA,
+            averageFrequencyB: averageFrequencyB,
+            activeRatio: activeRatio,
+            abruptness: abruptness,
+            channelDifference: channelDifference
+        )
+    }
+
+    public static func derive(_ pulses: [Pulse], profile: HWLDerivedProfile) -> [Pulse] {
+        guard pulses.count > 1 else { return pulses }
+
+        let amplitudeA = movingAverage(pulses.map { Double($0.ampA) }, radius: profile.amplitudeWindowRadius)
+        let amplitudeB = movingAverage(pulses.map { Double($0.ampB) }, radius: profile.amplitudeWindowRadius)
+        let frequencyA = movingAverage(pulses.map { Double($0.freqA) }, radius: profile.frequencyWindowRadius)
+        let frequencyB = movingAverage(pulses.map { Double($0.freqB) }, radius: profile.frequencyWindowRadius)
+
+        var derived: [Pulse] = []
+        derived.reserveCapacity(pulses.count)
+
+        for index in pulses.indices {
+            let mixedAmplitudeA = blendChannel(
+                primary: amplitudeA[index],
+                secondary: amplitudeB[index],
+                blend: profile.channelBlend
+            )
+            let mixedAmplitudeB = blendChannel(
+                primary: amplitudeB[index],
+                secondary: amplitudeA[index],
+                blend: profile.channelBlend
+            )
+            let mixedFrequencyA = blendChannel(
+                primary: frequencyA[index],
+                secondary: frequencyB[index],
+                blend: profile.channelBlend * 0.5
+            )
+            let mixedFrequencyB = blendChannel(
+                primary: frequencyB[index],
+                secondary: frequencyA[index],
+                blend: profile.channelBlend * 0.5
+            )
+
+            let ampA = shapeAmplitude(mixedAmplitudeA, profile: profile)
+            let ampB = shapeAmplitude(mixedAmplitudeB, profile: profile)
+            let freqA = shapeFrequency(mixedFrequencyA, profile: profile)
+            let freqB = shapeFrequency(mixedFrequencyB, profile: profile)
+
+            derived.append(
+                Pulse(
+                    ampA: Float(ampA.clamped(to: 0...1)),
+                    ampB: Float(ampB.clamped(to: 0...1)),
+                    freqA: Float(freqA.clamped(to: 0...1)),
+                    freqB: Float(freqB.clamped(to: 0...1))
+                )
+            )
+        }
+
+        return applySlewLimit(to: derived, amplitudeLimit: profile.amplitudeSlewLimit, frequencyLimit: profile.frequencySlewLimit)
+    }
+
+    private static func movingAverage(_ values: [Double], radius: Int) -> [Double] {
+        guard radius > 0, values.count > 2 else { return values }
+
+        return values.indices.map { index in
+            let lower = max(0, index - radius)
+            let upper = min(values.count - 1, index + radius)
+            let slice = values[lower...upper]
+            return slice.reduce(0.0, +) / Double(slice.count)
+        }
+    }
+
+    private static func blendChannel(primary: Double, secondary: Double, blend: Double) -> Double {
+        primary * (1 - blend) + secondary * blend
+    }
+
+    private static func shapeAmplitude(_ value: Double, profile: HWLDerivedProfile) -> Double {
+        let powered = pow(value.clamped(to: 0...1), profile.amplitudeGamma)
+        return (powered * profile.amplitudeBoost).clamped(to: 0...profile.amplitudeCeiling)
+    }
+
+    private static func shapeFrequency(_ value: Double, profile: HWLDerivedProfile) -> Double {
+        let centered = pow(value.clamped(to: 0...1), profile.frequencyGamma)
+        return (centered * profile.frequencyScale).clamped(to: 0...1)
+    }
+
+    private static func applySlewLimit(
+        to pulses: [Pulse],
+        amplitudeLimit: Double,
+        frequencyLimit: Double
+    ) -> [Pulse] {
+        guard pulses.count > 1 else { return pulses }
+
+        var limited = pulses
+
+        for index in 1..<limited.count {
+            limited[index].ampA = Float(limitStep(
+                current: Double(limited[index].ampA),
+                previous: Double(limited[index - 1].ampA),
+                maxDelta: amplitudeLimit
+            ))
+            limited[index].ampB = Float(limitStep(
+                current: Double(limited[index].ampB),
+                previous: Double(limited[index - 1].ampB),
+                maxDelta: amplitudeLimit
+            ))
+            limited[index].freqA = Float(limitStep(
+                current: Double(limited[index].freqA),
+                previous: Double(limited[index - 1].freqA),
+                maxDelta: frequencyLimit
+            ))
+            limited[index].freqB = Float(limitStep(
+                current: Double(limited[index].freqB),
+                previous: Double(limited[index - 1].freqB),
+                maxDelta: frequencyLimit
+            ))
+        }
+
+        return limited
+    }
+
+    private static func limitStep(current: Double, previous: Double, maxDelta: Double) -> Double {
+        let delta = (current - previous).clamped(to: -maxDelta...maxDelta)
+        return (previous + delta).clamped(to: 0...1)
+    }
+}
+
+public enum HWLDerivedProfile: String, CaseIterable, Identifiable, Sendable {
+    case comfort = "Comfort"
+    case smooth = "Smooth"
+    case punchy = "Punchy"
+
+    public var id: String { rawValue }
+
+    public var detail: String {
+        switch self {
+        case .comfort:
+            return "Softens peaks, narrows the top end, and calms abrupt transitions."
+        case .smooth:
+            return "Lightly smooths the original without flattening it too much."
+        case .punchy:
+            return "Keeps contrast and energy while shaving the harshest steps."
+        }
+    }
+
+    fileprivate var amplitudeWindowRadius: Int {
+        switch self {
+        case .comfort: return 3
+        case .smooth: return 2
+        case .punchy: return 1
+        }
+    }
+
+    fileprivate var frequencyWindowRadius: Int {
+        switch self {
+        case .comfort: return 4
+        case .smooth: return 2
+        case .punchy: return 1
+        }
+    }
+
+    fileprivate var amplitudeBoost: Double {
+        switch self {
+        case .comfort: return 0.96
+        case .smooth: return 1.0
+        case .punchy: return 1.08
+        }
+    }
+
+    fileprivate var amplitudeCeiling: Double {
+        switch self {
+        case .comfort: return 0.9
+        case .smooth: return 0.97
+        case .punchy: return 1.0
+        }
+    }
+
+    fileprivate var amplitudeGamma: Double {
+        switch self {
+        case .comfort: return 1.08
+        case .smooth: return 1.0
+        case .punchy: return 0.92
+        }
+    }
+
+    fileprivate var frequencyScale: Double {
+        switch self {
+        case .comfort: return 0.82
+        case .smooth: return 0.92
+        case .punchy: return 1.02
+        }
+    }
+
+    fileprivate var frequencyGamma: Double {
+        switch self {
+        case .comfort: return 1.06
+        case .smooth: return 1.0
+        case .punchy: return 0.95
+        }
+    }
+
+    fileprivate var channelBlend: Double {
+        switch self {
+        case .comfort: return 0.08
+        case .smooth: return 0.04
+        case .punchy: return 0.02
+        }
+    }
+
+    fileprivate var amplitudeSlewLimit: Double {
+        switch self {
+        case .comfort: return 0.12
+        case .smooth: return 0.18
+        case .punchy: return 0.24
+        }
+    }
+
+    fileprivate var frequencySlewLimit: Double {
+        switch self {
+        case .comfort: return 0.1
+        case .smooth: return 0.14
+        case .punchy: return 0.2
+        }
+    }
+}
+
+public struct HWLAnalysis: Equatable, Sendable {
+    public let pulseCount: Int
+    public let duration: TimeInterval
+    public let averageAmplitudeA: Double
+    public let averageAmplitudeB: Double
+    public let peakAmplitudeA: Double
+    public let peakAmplitudeB: Double
+    public let averageFrequencyA: Double
+    public let averageFrequencyB: Double
+    public let activeRatio: Double
+    public let abruptness: Double
+    public let channelDifference: Double
+
+    public var tags: [String] {
+        var values = ["HWL"]
+
+        if channelDifference > 0.18 {
+            values.append("A/B Split")
+        } else {
+            values.append("A/B Matched")
+        }
+
+        if abruptness > 0.24 {
+            values.append("Spiky")
+        } else if abruptness < 0.08 {
+            values.append("Gentle")
+        }
+
+        if activeRatio > 0.72 {
+            values.append("Dense")
+        } else if activeRatio < 0.28 {
+            values.append("Sparse")
+        }
+
+        return values
+    }
 }
 
 public enum HWLPlaybackProfile: String, CaseIterable, Identifiable, Sendable {

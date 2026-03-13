@@ -141,6 +141,16 @@ final class AppModel: ObservableObject {
         }
     }
 
+    struct LibraryAnalysisSummary: Equatable, Sendable {
+        let formatLabel: String
+        let tags: [String]
+        let hwlAnalysis: HWLAnalysis?
+
+        var supportsDerivedCopies: Bool {
+            hwlAnalysis != nil
+        }
+    }
+
     private enum LibraryDefaults {
         static let supportedExtensions = Set(["hwl", "funscript", "json"])
         static let supportedImportExtensions = Set(["hwl", "funscript", "json", "zip"])
@@ -216,6 +226,7 @@ final class AppModel: ObservableObject {
     @Published var isRefreshingLibrary = false
     @Published private(set) var favoriteLibraryRelativePaths: Set<String> = []
     @Published private(set) var playlists: [Playlist] = []
+    @Published private(set) var libraryAnalysisSummaries: [String: LibraryAnalysisSummary] = [:]
     @Published private(set) var libraryWaveformPreviews: [String: LibraryWaveformPreview] = [:]
     @Published private(set) var expandedLibraryFolderPaths: Set<String> = []
     @Published private(set) var expandedPlaylistIDs: Set<UUID> = []
@@ -236,6 +247,7 @@ final class AppModel: ObservableObject {
     private var playbackTickIndex = 0
     private var libraryRefreshTask: Task<Void, Never>?
     private var activeLibraryRefreshID: UUID?
+    private var analysisTasks: [String: Task<Void, Never>] = [:]
     private var waveformPreviewTasks: [String: Task<Void, Never>] = [:]
     private var isAdjustingFrequencyRange = false
 
@@ -332,6 +344,7 @@ final class AppModel: ObservableObject {
                 self.libraryEntries = entries.sorted {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
                 }
+                self.pruneAnalysisSummaries()
                 self.pruneWaveformPreviews()
                 self.libraryFolderName = LibraryDefaults.localFolderName
                 self.libraryStatusMessage = importedCount == 0
@@ -382,6 +395,7 @@ final class AppModel: ObservableObject {
                 self.libraryEntries = entries.sorted {
                     $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
                 }
+                self.pruneAnalysisSummaries()
                 self.pruneWaveformPreviews()
                 self.libraryFolderName = folderName
                 self.libraryStatusMessage = entries.isEmpty
@@ -423,6 +437,8 @@ final class AppModel: ObservableObject {
                 currentPlaylistID = nil
             }
 
+            libraryAnalysisSummaries.removeValue(forKey: entry.relativePath)
+            analysisTasks.removeValue(forKey: entry.relativePath)?.cancel()
             libraryWaveformPreviews.removeValue(forKey: entry.relativePath)
             waveformPreviewTasks.removeValue(forKey: entry.relativePath)?.cancel()
 
@@ -458,6 +474,38 @@ final class AppModel: ObservableObject {
 
     func waveformPreview(for entry: LibraryEntry) -> LibraryWaveformPreview? {
         libraryWaveformPreviews[entry.relativePath]
+    }
+
+    func analysisSummary(for entry: LibraryEntry) -> LibraryAnalysisSummary? {
+        libraryAnalysisSummaries[entry.relativePath]
+    }
+
+    func ensureAnalysisSummary(for entry: LibraryEntry) {
+        guard libraryAnalysisSummaries[entry.relativePath] == nil else { return }
+        guard analysisTasks[entry.relativePath] == nil else { return }
+
+        analysisTasks[entry.relativePath] = Task { [weak self] in
+            let analysisTask = Task.detached(priority: .utility) {
+                try Self.generateAnalysisSummary(for: entry)
+            }
+
+            defer {
+                analysisTask.cancel()
+            }
+
+            do {
+                let summary = try await analysisTask.value
+                guard !Task.isCancelled else { return }
+                guard let self else { return }
+                guard self.libraryEntries.contains(where: { $0.relativePath == entry.relativePath }) else { return }
+                self.libraryAnalysisSummaries[entry.relativePath] = summary
+                self.analysisTasks.removeValue(forKey: entry.relativePath)
+            } catch is CancellationError {
+                self?.analysisTasks.removeValue(forKey: entry.relativePath)
+            } catch {
+                self?.analysisTasks.removeValue(forKey: entry.relativePath)
+            }
+        }
     }
 
     func ensureWaveformPreview(for entry: LibraryEntry) {
@@ -606,6 +654,39 @@ final class AppModel: ObservableObject {
         loadPlaylistEntry(currentPlaylistEntries[currentPlaylistIndex + 1])
     }
 
+    func createDerivedCopy(from entry: LibraryEntry, profile: HWLDerivedProfile) {
+        statusMessage = "Creating \(profile.rawValue.lowercased()) copy of \(entry.displayName)..."
+        lastError = nil
+
+        Task { [weak self] in
+            let copyTask = Task.detached(priority: .userInitiated) {
+                try Self.createDerivedLibraryEntry(from: entry, profile: profile)
+            }
+
+            defer {
+                copyTask.cancel()
+            }
+
+            do {
+                let derivedEntry = try await copyTask.value
+                guard let self else { return }
+
+                self.libraryEntries.removeAll { $0.relativePath == derivedEntry.relativePath }
+                self.libraryEntries.append(derivedEntry)
+                self.libraryEntries.sort {
+                    $0.relativePath.localizedCaseInsensitiveCompare($1.relativePath) == .orderedAscending
+                }
+                self.ensureAnalysisSummary(for: derivedEntry)
+                self.ensureWaveformPreview(for: derivedEntry)
+                self.statusMessage = "Created \(derivedEntry.displayName)."
+                self.libraryStatusMessage = "Indexed \(self.libraryEntries.count) supported files."
+            } catch {
+                self?.lastError = error.localizedDescription
+                self?.statusMessage = "Could not create derived copy."
+            }
+        }
+    }
+
     func loadGenerator(playImmediately: Bool = false) {
         loadedImportedFile = nil
         loadedLibraryRelativePath = nil
@@ -713,6 +794,14 @@ final class AppModel: ObservableObject {
         libraryWaveformPreviews.removeAll()
     }
 
+    private func invalidateAnalysisSummaries() {
+        for task in analysisTasks.values {
+            task.cancel()
+        }
+        analysisTasks.removeAll()
+        libraryAnalysisSummaries.removeAll()
+    }
+
     private func pruneWaveformPreviews() {
         let validRelativePaths = Set(libraryEntries.map(\.relativePath))
         libraryWaveformPreviews = libraryWaveformPreviews.filter { validRelativePaths.contains($0.key) }
@@ -720,6 +809,16 @@ final class AppModel: ObservableObject {
         for relativePath in invalidTaskPaths {
             waveformPreviewTasks[relativePath]?.cancel()
             waveformPreviewTasks.removeValue(forKey: relativePath)
+        }
+    }
+
+    private func pruneAnalysisSummaries() {
+        let validRelativePaths = Set(libraryEntries.map(\.relativePath))
+        libraryAnalysisSummaries = libraryAnalysisSummaries.filter { validRelativePaths.contains($0.key) }
+        let invalidTaskPaths = analysisTasks.keys.filter { !validRelativePaths.contains($0) }
+        for relativePath in invalidTaskPaths {
+            analysisTasks[relativePath]?.cancel()
+            analysisTasks.removeValue(forKey: relativePath)
         }
     }
 
@@ -845,6 +944,29 @@ final class AppModel: ObservableObject {
         return ImportedFile(data: fileData, displayName: displayName, ext: ext)
     }
 
+    nonisolated private static func generateAnalysisSummary(for entry: LibraryEntry) throws -> LibraryAnalysisSummary {
+        let importedFile = try readImportedFile(from: entry.url)
+
+        switch importedFile.ext {
+        case "hwl":
+            let pulses = try HWLFile.read(from: importedFile.data)
+            let analysis = HWLFile.analyze(pulses)
+            return LibraryAnalysisSummary(
+                formatLabel: "HWL",
+                tags: analysis.tags,
+                hwlAnalysis: analysis
+            )
+        case "funscript", "json":
+            return LibraryAnalysisSummary(
+                formatLabel: "Funscript",
+                tags: ["Funscript"],
+                hwlAnalysis: nil
+            )
+        default:
+            throw HowlCoreError.unsupportedFileType(importedFile.ext)
+        }
+    }
+
     nonisolated private static func generateWaveformPreview(
         for entry: LibraryEntry,
         hwlProfile: HWLPlaybackProfile
@@ -903,6 +1025,37 @@ final class AppModel: ObservableObject {
             amplitudeB: amplitudeB,
             frequencyA: frequencyA,
             frequencyB: frequencyB
+        )
+    }
+
+    nonisolated private static func createDerivedLibraryEntry(
+        from entry: LibraryEntry,
+        profile: HWLDerivedProfile
+    ) throws -> LibraryEntry {
+        let importedFile = try readImportedFile(from: entry.url)
+        guard importedFile.ext == "hwl" else {
+            throw HowlCoreError.unsupportedFileType(importedFile.ext)
+        }
+
+        let pulses = try HWLFile.read(from: importedFile.data)
+        let derivedPulses = HWLFile.derive(pulses, profile: profile)
+        let derivedData = HWLFile.write(derivedPulses)
+
+        let destinationDirectory = entry.url.deletingLastPathComponent()
+        let destinationURL = uniqueDestinationURL(
+            directory: destinationDirectory,
+            preferredName: derivedFileName(for: entry.displayName, profile: profile)
+        )
+        try derivedData.write(to: destinationURL, options: [.atomic])
+
+        let modifiedAt = try? destinationURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        let libraryRootURL = try localLibraryRootURLStatic()
+
+        return LibraryEntry(
+            url: destinationURL,
+            displayName: destinationURL.lastPathComponent,
+            relativePath: relativePath(for: destinationURL, baseURL: libraryRootURL),
+            modifiedAt: modifiedAt ?? nil
         )
     }
 
@@ -1340,6 +1493,19 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(self.pulseInterval))
             }
         }
+    }
+
+    nonisolated private static func derivedFileName(for originalName: String, profile: HWLDerivedProfile) -> String {
+        let url = URL(fileURLWithPath: originalName)
+        let baseName = url.deletingPathExtension().lastPathComponent
+        return "\(baseName) [\(profile.rawValue)].hwl"
+    }
+
+    nonisolated private static func relativePath(for url: URL, baseURL: URL) -> String {
+        url.path.replacingOccurrences(
+            of: baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/",
+            with: ""
+        )
     }
 
     private func tick() {

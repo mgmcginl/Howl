@@ -350,6 +350,7 @@ private struct LibraryEntryRow: View {
                 .frame(width: 96, height: 52)
                 .task(id: entry.relativePath) {
                     model.ensureWaveformPreview(for: entry)
+                    model.ensureAnalysisSummary(for: entry)
                 }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -365,9 +366,21 @@ private struct LibraryEntryRow: View {
                 }
 
                 HStack(spacing: 8) {
-                    if let preview = model.waveformPreview(for: entry), preview.channelsDiffer {
+                    if let summary = model.analysisSummary(for: entry) {
+                        ForEach(Array(summary.tags.prefix(2)), id: \.self) { tag in
+                            Text(tag)
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(tagColor(tag).opacity(0.14), in: Capsule())
+                                .foregroundStyle(tagColor(tag))
+                        }
+                    } else if let preview = model.waveformPreview(for: entry), preview.channelsDiffer {
                         Text("A/B Split")
                             .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.orange.opacity(0.14), in: Capsule())
                             .foregroundStyle(.orange)
                     }
 
@@ -399,6 +412,18 @@ private struct LibraryEntryRow: View {
                     onCreatePlaylist(entry)
                 } label: {
                     Label("New Playlist", systemImage: "plus.rectangle.on.folder")
+                }
+
+                if let summary = model.analysisSummary(for: entry), summary.supportsDerivedCopies {
+                    Menu {
+                        ForEach(HWLDerivedProfile.allCases) { profile in
+                            Button(profile.rawValue) {
+                                model.createDerivedCopy(from: entry, profile: profile)
+                            }
+                        }
+                    } label: {
+                        Label("Create Derived Copy", systemImage: "wand.and.stars")
+                    }
                 }
 
                 ForEach(model.playlists) { playlist in
@@ -449,6 +474,21 @@ private struct LibraryEntryRow: View {
         }
         .onTapGesture {
             model.loadLibraryEntry(entry, playlistID: currentPlaylistID)
+        }
+    }
+
+    private func tagColor(_ tag: String) -> Color {
+        switch tag {
+        case "A/B Split":
+            return .orange
+        case "Spiky":
+            return .red
+        case "Dense":
+            return .blue
+        case "Sparse", "Gentle":
+            return .green
+        default:
+            return .secondary
         }
     }
 }
