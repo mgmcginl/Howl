@@ -38,6 +38,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private var playbackState = PlaybackState()
     private var schedulingTask: Task<Void, Never>?
     private var scheduledBufferCount = 0
+    private var keepalivePlayer: AVAudioPlayer?
 
     override init() {
         super.init()
@@ -64,6 +65,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         powerA: Int,
         powerB: Int
     ) {
+        keepalivePlayer?.stop()
+
         do {
             try session.setCategory(
                 .playback,
@@ -128,17 +131,15 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setActive(true)
             updateRouteSummary()
             updateKeepaliveState(isActive: true)
-
-            if engine.isRunning == false {
-                try engine.start()
+            if keepalivePlayer == nil {
+                keepalivePlayer = try AVAudioPlayer(data: Self.makeSilentWAVData())
+                keepalivePlayer?.numberOfLoops = -1
+                keepalivePlayer?.volume = 1.0
+                keepalivePlayer?.prepareToPlay()
             }
-
-            if playerNode.isPlaying == false {
-                playerNode.play()
+            if keepalivePlayer?.isPlaying == false {
+                keepalivePlayer?.play()
             }
-
-            ensureSchedulingLoop()
-            topOffBuffers()
             statusSummary = "Background keepalive active"
             lastError = nil
         } catch {
@@ -152,6 +153,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         schedulingTask = nil
         scheduledBufferCount = 0
         updateActive(false)
+        keepalivePlayer?.stop()
         playerNode.stop()
         if engine.isRunning {
             engine.stop()
@@ -356,6 +358,44 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private static func channelGain(for power: Int) -> Double {
         let normalized = Double(power.clamped(to: 0...200)) / 200.0
         return normalized * 0.3
+    }
+
+    private static func makeSilentWAVData(
+        sampleRate: Int = 44_100,
+        channels: Int = 2,
+        bitsPerSample: Int = 16,
+        durationSeconds: Double = 1
+    ) -> Data {
+        let bytesPerSample = bitsPerSample / 8
+        let frameCount = Int(Double(sampleRate) * durationSeconds)
+        let dataSize = frameCount * channels * bytesPerSample
+        let byteRate = sampleRate * channels * bytesPerSample
+        let blockAlign = channels * bytesPerSample
+        let chunkSize = 36 + dataSize
+
+        var data = Data()
+        data.reserveCapacity(44 + dataSize)
+
+        data.append(contentsOf: Array("RIFF".utf8))
+        data.append(contentsOf: littleEndianBytes(UInt32(chunkSize)))
+        data.append(contentsOf: Array("WAVE".utf8))
+        data.append(contentsOf: Array("fmt ".utf8))
+        data.append(contentsOf: littleEndianBytes(UInt32(16)))
+        data.append(contentsOf: littleEndianBytes(UInt16(1)))
+        data.append(contentsOf: littleEndianBytes(UInt16(channels)))
+        data.append(contentsOf: littleEndianBytes(UInt32(sampleRate)))
+        data.append(contentsOf: littleEndianBytes(UInt32(byteRate)))
+        data.append(contentsOf: littleEndianBytes(UInt16(blockAlign)))
+        data.append(contentsOf: littleEndianBytes(UInt16(bitsPerSample)))
+        data.append(contentsOf: Array("data".utf8))
+        data.append(contentsOf: littleEndianBytes(UInt32(dataSize)))
+        data.append(Data(count: dataSize))
+
+        return data
+    }
+
+    private static func littleEndianBytes<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+        withUnsafeBytes(of: value.littleEndian) { Array($0) }
     }
 }
 
