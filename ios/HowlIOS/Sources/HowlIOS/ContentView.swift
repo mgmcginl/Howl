@@ -555,10 +555,10 @@ private struct WaveformChannelStrip: View {
                     .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
 
                     waveformPath(for: amplitude, in: geometry.size)
-                        .stroke(tint.opacity(0.95), style: StrokeStyle(lineWidth: 1.8, lineJoin: .round, lineCap: .round))
+                        .stroke(tint.opacity(0.95), style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
 
                     waveformPath(for: frequency, in: geometry.size)
-                        .stroke(tint.opacity(0.35), style: StrokeStyle(lineWidth: 1.1, lineJoin: .round, lineCap: .round))
+                        .stroke(tint.opacity(0.35), style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
                 }
             }
         }
@@ -573,9 +573,9 @@ private struct WaveformChannelStrip: View {
         for (index, sample) in samples.enumerated() {
             let progress = samples.count == 1 ? 0 : CGFloat(index) / CGFloat(samples.count - 1)
             let x = progress * maxX
-            let y = (1 - CGFloat(sample.clamped(to: 0...1))) * maxY
+            let y = (1 - CGFloat(max(0, min(sample, 1)))) * maxY
             if index == 0 {
-                let startY = (1 - CGFloat(first.clamped(to: 0...1))) * maxY
+                let startY = (1 - CGFloat(max(0, min(first, 1)))) * maxY
                 path.move(to: CGPoint(x: x, y: startY))
             } else {
                 path.addLine(to: CGPoint(x: x, y: y))
