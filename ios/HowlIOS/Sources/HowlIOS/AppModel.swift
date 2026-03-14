@@ -283,6 +283,7 @@ final class AppModel: ObservableObject {
     private var waveformPreviewTasks: [String: Task<Void, Never>] = [:]
     private var isAdjustingFrequencyRange = false
     private var liveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var liveHeartbeatTask: Task<Void, Never>?
 
     init() {
         loadPowerControls()
@@ -807,6 +808,7 @@ final class AppModel: ObservableObject {
             : "Playing \(sourceName)."
         syncAudioTransport()
         syncBackgroundKeepalive()
+        syncLiveHeartbeat()
         startPlaybackLoop()
     }
 
@@ -814,6 +816,8 @@ final class AppModel: ObservableObject {
         isPlaying = false
         playbackTask?.cancel()
         playbackTask = nil
+        liveHeartbeatTask?.cancel()
+        liveHeartbeatTask = nil
         endLiveBackgroundTask()
         audioEngine.stop()
         sendSilenceIfNeeded()
@@ -841,6 +845,7 @@ final class AppModel: ObservableObject {
             } else {
                 syncBackgroundKeepalive()
             }
+            syncLiveHeartbeat()
         case .inactive, .background:
             syncLifecycleBackgroundTask(isEnteringBackground: true)
             if outputMode == .audio {
@@ -848,6 +853,7 @@ final class AppModel: ObservableObject {
             } else {
                 syncBackgroundKeepalive()
             }
+            syncLiveHeartbeat()
         @unknown default:
             break
         }
@@ -1624,6 +1630,7 @@ final class AppModel: ObservableObject {
         currentPulse = pulse
         appendToHistory(pulse)
         applyOutput(for: pulse, source: source, at: position, transmit: true)
+        syncLiveHeartbeat()
 
         let nextPosition = position + pulseInterval
         playbackTickIndex += 1
@@ -1672,12 +1679,14 @@ final class AppModel: ObservableObject {
         if outputMode == .preview {
             bleManager.clearStagedPacket()
             syncBackgroundKeepalive()
+            syncLiveHeartbeat()
             return
         }
 
         syncBleLimits()
         syncAudioTransport()
         syncBackgroundKeepalive()
+        syncLiveHeartbeat()
         renderCurrentFrame()
     }
 
@@ -1700,6 +1709,7 @@ final class AppModel: ObservableObject {
         }
 
         syncAudioTransport()
+        syncLiveHeartbeat()
     }
 
     private func reloadCurrentHWLIfNeeded() {
@@ -1823,6 +1833,41 @@ final class AppModel: ObservableObject {
             audioEngine.startKeepalive()
         } else {
             audioEngine.stop()
+        }
+    }
+
+    private func syncLiveHeartbeat() {
+        let shouldRunHeartbeat =
+            enableLiveBackgroundKeepalive
+            && outputMode == .coyote3Live
+            && isPlaying
+            && loadedSource != nil
+            && bleManager.isReady
+
+        guard shouldRunHeartbeat else {
+            liveHeartbeatTask?.cancel()
+            liveHeartbeatTask = nil
+            return
+        }
+
+        guard liveHeartbeatTask == nil else { return }
+
+        liveHeartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { return }
+                guard self.enableLiveBackgroundKeepalive,
+                      self.outputMode == .coyote3Live,
+                      self.isPlaying,
+                      self.loadedSource != nil,
+                      self.bleManager.isReady
+                else {
+                    self.liveHeartbeatTask = nil
+                    return
+                }
+                self.bleManager.sendHeartbeat()
+            }
         }
     }
 

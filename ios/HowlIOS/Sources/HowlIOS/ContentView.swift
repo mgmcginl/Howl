@@ -1151,6 +1151,7 @@ private struct SettingsView: View {
                     LabeledContent("Last Notify", value: bleManager.lastNotifySummary)
                     LabeledContent("Pulse Batches", value: "\(bleManager.sentPulsePacketCount)")
                     LabeledContent("Backpressure Hits", value: "\(bleManager.queuedPulsePacketCount)")
+                    LabeledContent("Heartbeats", value: "\(bleManager.heartbeatCount)")
                     LabeledContent("Notify Frames", value: "\(bleManager.notifyFrameCount)")
                     LabeledContent("Requested Power", value: bleManager.requestedPowerSummary)
                     LabeledContent("Pulse Packet Power", value: bleManager.pulsePowerSummary)

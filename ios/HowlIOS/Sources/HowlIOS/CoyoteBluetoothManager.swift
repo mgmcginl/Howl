@@ -44,6 +44,8 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
     @Published var lastParameterLimitB: Int?
     @Published var lastParameterSentAt: Date?
     @Published var lastEchoAt: Date?
+    @Published var heartbeatCount = 0
+    @Published var lastHeartbeatAt: Date?
     @Published var lastError: String?
 
     var isReady: Bool {
@@ -136,6 +138,15 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         stage(packet)
         guard isReady else { return }
         write(packet, intent: .pulse)
+    }
+
+    func sendHeartbeat() {
+        guard isReady else { return }
+        heartbeatCount += 1
+        lastHeartbeatAt = Date()
+        lastWriteSummary = "Sent BLE heartbeat #\(heartbeatCount)."
+        sendParameters(markAsInitialSync: false)
+        readBatteryLevel()
     }
 
     private func scheduleScanTimeout() {
@@ -276,6 +287,8 @@ final class CoyoteBluetoothManager: NSObject, ObservableObject {
         lastParameterLimitB = nil
         lastParameterSentAt = nil
         lastEchoAt = nil
+        heartbeatCount = 0
+        lastHeartbeatAt = nil
         if clearPeripheral {
             connectedPeripheral = nil
         }

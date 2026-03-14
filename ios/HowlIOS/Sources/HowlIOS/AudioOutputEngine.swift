@@ -42,7 +42,6 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private var playbackState = PlaybackState()
     private var schedulingTask: Task<Void, Never>?
     private var scheduledBufferCount = 0
-    private var keepalivePlayer: AVAudioPlayer?
 
     override init() {
         super.init()
@@ -81,8 +80,6 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         powerA: Int,
         powerB: Int
     ) {
-        keepalivePlayer?.stop()
-
         do {
             try session.setCategory(
                 .playback,
@@ -116,6 +113,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 try engine.start()
             }
 
+            scheduledBufferCount = 0
             if playerNode.isPlaying == false {
                 playerNode.play()
             }
@@ -150,23 +148,17 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             try session.setActive(true)
             updateRouteSummary()
             updateKeepaliveState(isActive: true)
-            if keepalivePlayer == nil {
-                keepalivePlayer = try AVAudioPlayer(data: Self.makeKeepaliveWAVData())
-                keepalivePlayer?.numberOfLoops = -1
-                keepalivePlayer?.volume = 1.0
-                keepalivePlayer?.prepareToPlay()
+            if engine.isRunning == false {
+                try engine.start()
             }
-            if keepalivePlayer?.isPlaying == false {
-                let didStart = keepalivePlayer?.play() ?? false
-                guard didStart else {
-                    lastError = "Keepalive player refused to start."
-                    statusSummary = "Keepalive failed"
-                    keepaliveSummary = "Player did not start"
-                    return
-                }
+            scheduledBufferCount = 0
+            if playerNode.isPlaying == false {
+                playerNode.play()
             }
+            ensureSchedulingLoop()
+            topOffBuffers()
             statusSummary = "Background keepalive active"
-            keepaliveSummary = "Real keepalive tone playing on \(routeSummary)"
+            keepaliveSummary = "Engine keepalive tone active on \(routeSummary)"
             updateNowPlaying(title: "Howl Live BLE Keepalive", isLive: true)
             lastError = nil
         } catch {
@@ -181,7 +173,6 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         schedulingTask = nil
         scheduledBufferCount = 0
         updateActive(false)
-        keepalivePlayer?.stop()
         playerNode.stop()
         if engine.isRunning {
             engine.stop()
@@ -278,45 +269,62 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 continue
             }
 
-            guard state.mode == .output, let source = state.source else {
+            guard state.mode == .output || state.mode == .keepalive else {
                 leftBuffer[frame] = 0
                 rightBuffer[frame] = 0
                 state.sampleCursor += 1
                 continue
             }
 
-            let absoluteTime = state.position + (state.sampleCursor / sampleRate)
-            let pulse: Pulse
-            if let duration = source.duration, duration > 0 {
-                if source.shouldLoop {
-                    pulse = source.pulse(at: absoluteTime.truncatingRemainder(dividingBy: duration))
-                } else if absoluteTime >= duration {
+            if state.mode == .keepalive {
+                state.phaseA += twoPi * keepaliveFrequency / sampleRate
+                state.phaseB += twoPi * (keepaliveFrequency * 0.92) / sampleRate
+                if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
+                if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
+                leftBuffer[frame] = Float(sin(state.phaseA) * keepaliveAmplitude)
+                rightBuffer[frame] = Float(sin(state.phaseB) * keepaliveAmplitude)
+                state.sampleCursor += 1
+            } else {
+                guard let source = state.source else {
                     leftBuffer[frame] = 0
                     rightBuffer[frame] = 0
-                    state.isActive = false
+                    state.sampleCursor += 1
                     continue
+                }
+
+                let absoluteTime = state.position + (state.sampleCursor / sampleRate)
+                let pulse: Pulse
+                if let duration = source.duration, duration > 0 {
+                    if source.shouldLoop {
+                        pulse = source.pulse(at: absoluteTime.truncatingRemainder(dividingBy: duration))
+                    } else if absoluteTime >= duration {
+                        leftBuffer[frame] = 0
+                        rightBuffer[frame] = 0
+                        state.isActive = false
+                        continue
+                    } else {
+                        pulse = source.pulse(at: absoluteTime)
+                    }
                 } else {
                     pulse = source.pulse(at: absoluteTime)
                 }
-            } else {
-                pulse = source.pulse(at: absoluteTime)
+
+                let frequencySpan = max(state.maxFrequency - state.minFrequency, 0)
+                let frequencyA = state.minFrequency + frequencySpan * Double(pulse.freqA)
+                let frequencyB = state.minFrequency + frequencySpan * Double(pulse.freqB)
+                let amplitudeA = Double(pulse.ampA) * state.gainA
+                let amplitudeB = Double(pulse.ampB) * state.gainB
+
+                state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
+                state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
+
+                if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
+                if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
+
+                leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
+                rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
+                state.sampleCursor += 1
             }
-
-            let frequencySpan = max(state.maxFrequency - state.minFrequency, 0)
-            let frequencyA = state.minFrequency + frequencySpan * Double(pulse.freqA)
-            let frequencyB = state.minFrequency + frequencySpan * Double(pulse.freqB)
-            let amplitudeA = Double(pulse.ampA) * state.gainA
-            let amplitudeB = Double(pulse.ampB) * state.gainB
-
-            state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
-            state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
-
-            if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
-            if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
-
-            leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
-            rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
-            state.sampleCursor += 1
         }
 
         stateLock.lock()
@@ -444,6 +452,13 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     }
 
     private func updateNowPlaying(title: String, isLive: Bool) {
+        let commandCenter = MPRemoteCommandCenter.shared()
+        commandCenter.playCommand.isEnabled = true
+        commandCenter.pauseCommand.isEnabled = true
+        commandCenter.togglePlayPauseCommand.isEnabled = true
+        commandCenter.nextTrackCommand.isEnabled = false
+        commandCenter.previousTrackCommand.isEnabled = false
+
         MPNowPlayingInfoCenter.default().nowPlayingInfo = [
             MPMediaItemPropertyTitle: title,
             MPNowPlayingInfoPropertyIsLiveStream: isLive,
@@ -456,54 +471,6 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         return normalized * 0.3
     }
 
-    private static func makeKeepaliveWAVData(
-        sampleRate: Int = 44_100,
-        channels: Int = 2,
-        bitsPerSample: Int = 16,
-        durationSeconds: Double = 1
-    ) -> Data {
-        let bytesPerSample = bitsPerSample / 8
-        let frameCount = Int(Double(sampleRate) * durationSeconds)
-        let dataSize = frameCount * channels * bytesPerSample
-        let byteRate = sampleRate * channels * bytesPerSample
-        let blockAlign = channels * bytesPerSample
-        let chunkSize = 36 + dataSize
-
-        var data = Data()
-        data.reserveCapacity(44 + dataSize)
-
-        data.append(contentsOf: Array("RIFF".utf8))
-        data.append(contentsOf: littleEndianBytes(UInt32(chunkSize)))
-        data.append(contentsOf: Array("WAVE".utf8))
-        data.append(contentsOf: Array("fmt ".utf8))
-        data.append(contentsOf: littleEndianBytes(UInt32(16)))
-        data.append(contentsOf: littleEndianBytes(UInt16(1)))
-        data.append(contentsOf: littleEndianBytes(UInt16(channels)))
-        data.append(contentsOf: littleEndianBytes(UInt32(sampleRate)))
-        data.append(contentsOf: littleEndianBytes(UInt32(byteRate)))
-        data.append(contentsOf: littleEndianBytes(UInt16(blockAlign)))
-        data.append(contentsOf: littleEndianBytes(UInt16(bitsPerSample)))
-        data.append(contentsOf: Array("data".utf8))
-        data.append(contentsOf: littleEndianBytes(UInt32(dataSize)))
-        let maxSampleValue = Double(Int16.max)
-        let amplitude = keepaliveAmplitude
-        let radiansPerSample = 2.0 * Double.pi * keepaliveFrequency / Double(sampleRate)
-
-        for frame in 0..<frameCount {
-            let sample = sin(Double(frame) * radiansPerSample) * amplitude
-            let quantized = Int16((sample * maxSampleValue).rounded())
-            let sampleBytes = littleEndianBytes(quantized)
-            for _ in 0..<channels {
-                data.append(contentsOf: sampleBytes)
-            }
-        }
-
-        return data
-    }
-
-    private static func littleEndianBytes<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
-        withUnsafeBytes(of: value.littleEndian) { Array($0) }
-    }
 }
 
 private extension BinaryInteger {
