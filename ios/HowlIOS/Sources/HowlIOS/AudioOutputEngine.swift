@@ -36,8 +36,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private let renderFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
     private let chunkFrameCount: AVAudioFrameCount = 4_096
     private let targetBufferedChunkCount = 3
-    private static let keepaliveFrequency = 18_500.0
-    private static let keepaliveAmplitude = 0.0025
+    private static let keepaliveFrequency = 440.0
+    private static let keepaliveAmplitude = 0.025
 
     private var playbackState = PlaybackState()
     private var schedulingTask: Task<Void, Never>?
