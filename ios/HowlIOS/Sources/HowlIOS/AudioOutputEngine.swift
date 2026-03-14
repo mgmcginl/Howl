@@ -37,11 +37,12 @@ final class AudioOutputEngine: NSObject, ObservableObject {
     private let chunkFrameCount: AVAudioFrameCount = 4_096
     private let targetBufferedChunkCount = 3
     private static let keepaliveFrequency = 440.0
-    private static let keepaliveAmplitude = 0.025
+    private static let keepaliveAmplitude = 0.3
 
     private var playbackState = PlaybackState()
     private var schedulingTask: Task<Void, Never>?
     private var scheduledBufferCount = 0
+    private var keepaliveSourceNode: AVAudioSourceNode?
 
     override init() {
         super.init()
@@ -95,6 +96,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         do {
             try session.setActive(true)
             updateRouteSummary()
+            removeKeepaliveNode()
 
             let shouldResetPlaybackCursor = playbackState.isActive == false
             updateState(
@@ -147,18 +149,54 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         do {
             try session.setActive(true)
             updateRouteSummary()
+
+            schedulingTask?.cancel()
+            schedulingTask = nil
+            scheduledBufferCount = 0
+            playerNode.stop()
+            removeKeepaliveNode()
+
+            var phaseA: Double = 0
+            var phaseB: Double = 0
+            let freq = Self.keepaliveFrequency
+            let freqB = freq * 0.92
+            let amp = Self.keepaliveAmplitude
+            let sr = renderFormat.sampleRate
+            let twoPi = Double.pi * 2
+
+            let sourceNode = AVAudioSourceNode(format: renderFormat) {
+                isSilence, _, frameCount, bufferList in
+                isSilence.pointee = ObjCBool(false)
+                let abl = UnsafeMutableAudioBufferListPointer(bufferList)
+                guard abl.count >= 2,
+                      let left = abl[0].mData?.assumingMemoryBound(to: Float.self),
+                      let right = abl[1].mData?.assumingMemoryBound(to: Float.self)
+                else { return noErr }
+
+                for i in 0..<Int(frameCount) {
+                    left[i] = Float(sin(phaseA) * amp)
+                    right[i] = Float(sin(phaseB) * amp)
+                    phaseA += twoPi * freq / sr
+                    phaseB += twoPi * freqB / sr
+                    if phaseA >= twoPi { phaseA -= twoPi }
+                    if phaseB >= twoPi { phaseB -= twoPi }
+                }
+
+                return noErr
+            }
+
+            engine.attach(sourceNode)
+            engine.connect(sourceNode, to: engine.mainMixerNode, format: renderFormat)
+            keepaliveSourceNode = sourceNode
+
             updateKeepaliveState(isActive: true)
+
             if engine.isRunning == false {
                 try engine.start()
             }
-            scheduledBufferCount = 0
-            if playerNode.isPlaying == false {
-                playerNode.play()
-            }
-            ensureSchedulingLoop()
-            topOffBuffers()
+
             statusSummary = "Background keepalive active"
-            keepaliveSummary = "Engine keepalive tone active on \(routeSummary)"
+            keepaliveSummary = "Render-thread keepalive on \(routeSummary)"
             updateNowPlaying(title: "Howl Live BLE Keepalive", isLive: true)
             lastError = nil
         } catch {
@@ -174,6 +212,7 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         scheduledBufferCount = 0
         updateActive(false)
         playerNode.stop()
+        removeKeepaliveNode()
         if engine.isRunning {
             engine.stop()
         }
@@ -210,6 +249,13 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             engine.connect(playerNode, to: engine.mainMixerNode, format: renderFormat)
         }
         engine.prepare()
+    }
+
+    private func removeKeepaliveNode() {
+        if let node = keepaliveSourceNode {
+            engine.detach(node)
+            keepaliveSourceNode = nil
+        }
     }
 
     private func ensureSchedulingLoop() {
@@ -269,62 +315,52 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 continue
             }
 
-            guard state.mode == .output || state.mode == .keepalive else {
+            guard state.mode == .output else {
                 leftBuffer[frame] = 0
                 rightBuffer[frame] = 0
                 state.sampleCursor += 1
                 continue
             }
 
-            if state.mode == .keepalive {
-                state.phaseA += twoPi * Self.keepaliveFrequency / sampleRate
-                state.phaseB += twoPi * (Self.keepaliveFrequency * 0.92) / sampleRate
-                if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
-                if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
-                leftBuffer[frame] = Float(sin(state.phaseA) * Self.keepaliveAmplitude)
-                rightBuffer[frame] = Float(sin(state.phaseB) * Self.keepaliveAmplitude)
+            guard let source = state.source else {
+                leftBuffer[frame] = 0
+                rightBuffer[frame] = 0
                 state.sampleCursor += 1
-            } else {
-                guard let source = state.source else {
+                continue
+            }
+
+            let absoluteTime = state.position + (state.sampleCursor / sampleRate)
+            let pulse: Pulse
+            if let duration = source.duration, duration > 0 {
+                if source.shouldLoop {
+                    pulse = source.pulse(at: absoluteTime.truncatingRemainder(dividingBy: duration))
+                } else if absoluteTime >= duration {
                     leftBuffer[frame] = 0
                     rightBuffer[frame] = 0
-                    state.sampleCursor += 1
+                    state.isActive = false
                     continue
-                }
-
-                let absoluteTime = state.position + (state.sampleCursor / sampleRate)
-                let pulse: Pulse
-                if let duration = source.duration, duration > 0 {
-                    if source.shouldLoop {
-                        pulse = source.pulse(at: absoluteTime.truncatingRemainder(dividingBy: duration))
-                    } else if absoluteTime >= duration {
-                        leftBuffer[frame] = 0
-                        rightBuffer[frame] = 0
-                        state.isActive = false
-                        continue
-                    } else {
-                        pulse = source.pulse(at: absoluteTime)
-                    }
                 } else {
                     pulse = source.pulse(at: absoluteTime)
                 }
-
-                let frequencySpan = max(state.maxFrequency - state.minFrequency, 0)
-                let frequencyA = state.minFrequency + frequencySpan * Double(pulse.freqA)
-                let frequencyB = state.minFrequency + frequencySpan * Double(pulse.freqB)
-                let amplitudeA = Double(pulse.ampA) * state.gainA
-                let amplitudeB = Double(pulse.ampB) * state.gainB
-
-                state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
-                state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
-
-                if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
-                if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
-
-                leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
-                rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
-                state.sampleCursor += 1
+            } else {
+                pulse = source.pulse(at: absoluteTime)
             }
+
+            let frequencySpan = max(state.maxFrequency - state.minFrequency, 0)
+            let frequencyA = state.minFrequency + frequencySpan * Double(pulse.freqA)
+            let frequencyB = state.minFrequency + frequencySpan * Double(pulse.freqB)
+            let amplitudeA = Double(pulse.ampA) * state.gainA
+            let amplitudeB = Double(pulse.ampB) * state.gainB
+
+            state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
+            state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
+
+            if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
+            if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
+
+            leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
+            rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
+            state.sampleCursor += 1
         }
 
         stateLock.lock()
