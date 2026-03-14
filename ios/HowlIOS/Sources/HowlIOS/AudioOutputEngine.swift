@@ -277,12 +277,12 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             }
 
             if state.mode == .keepalive {
-                state.phaseA += twoPi * keepaliveFrequency / sampleRate
-                state.phaseB += twoPi * (keepaliveFrequency * 0.92) / sampleRate
+                state.phaseA += twoPi * Self.keepaliveFrequency / sampleRate
+                state.phaseB += twoPi * (Self.keepaliveFrequency * 0.92) / sampleRate
                 if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
                 if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
-                leftBuffer[frame] = Float(sin(state.phaseA) * keepaliveAmplitude)
-                rightBuffer[frame] = Float(sin(state.phaseB) * keepaliveAmplitude)
+                leftBuffer[frame] = Float(sin(state.phaseA) * Self.keepaliveAmplitude)
+                rightBuffer[frame] = Float(sin(state.phaseB) * Self.keepaliveAmplitude)
                 state.sampleCursor += 1
             } else {
                 guard let source = state.source else {
