@@ -158,11 +158,12 @@ final class AudioOutputEngine: NSObject, ObservableObject {
 
             var phaseA: Double = 0
             var phaseB: Double = 0
-            let freq = Self.keepaliveFrequency
-            let freqB = freq * 0.92
+            var wanderPhase: Double = 0
+            let baseFreq = Self.keepaliveFrequency
             let amp = Self.keepaliveAmplitude
             let sr = renderFormat.sampleRate
             let twoPi = Double.pi * 2
+            var lfsrState: UInt32 = 0xACE1
 
             let sourceNode = AVAudioSourceNode(format: renderFormat) {
                 isSilence, _, frameCount, bufferList in
@@ -174,10 +175,25 @@ final class AudioOutputEngine: NSObject, ObservableObject {
                 else { return noErr }
 
                 for i in 0..<Int(frameCount) {
-                    left[i] = Float(sin(phaseA) * amp)
-                    right[i] = Float(sin(phaseB) * amp)
-                    phaseA += twoPi * freq / sr
-                    phaseB += twoPi * freqB / sr
+                    // Wander frequency ±120 Hz around base on a slow ~0.07 Hz cycle
+                    // plus a faster wobble so the spectrum never looks constant
+                    wanderPhase += twoPi * 0.07 / sr
+                    if wanderPhase >= twoPi { wanderPhase -= twoPi }
+                    let freqA = baseFreq + 120.0 * sin(wanderPhase) + 30.0 * sin(wanderPhase * 5.13)
+                    let freqB = baseFreq * 0.92 + 80.0 * sin(wanderPhase * 0.79) + 20.0 * sin(wanderPhase * 3.71)
+
+                    // Amplitude jitter ±15% via LFSR (deterministic, no arc4random on audio thread)
+                    lfsrState ^= lfsrState << 13
+                    lfsrState ^= lfsrState >> 17
+                    lfsrState ^= lfsrState << 5
+                    let jitter = Double(lfsrState % 1000) / 1000.0  // 0-1
+                    let ampA = amp * (0.85 + 0.30 * jitter)
+                    let ampB = amp * (0.85 + 0.30 * (1.0 - jitter))
+
+                    left[i] = Float(sin(phaseA) * ampA)
+                    right[i] = Float(sin(phaseB) * ampB)
+                    phaseA += twoPi * max(freqA, 80) / sr
+                    phaseB += twoPi * max(freqB, 80) / sr
                     if phaseA >= twoPi { phaseA -= twoPi }
                     if phaseB >= twoPi { phaseB -= twoPi }
                 }
