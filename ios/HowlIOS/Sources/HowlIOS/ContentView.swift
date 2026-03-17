@@ -36,6 +36,7 @@ struct ContentView: View {
 private struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @State private var showLibraryImporter = false
+    @State private var showSyncFolderPicker = false
     @State private var searchText = ""
     @State private var showCreatePlaylistAlert = false
     @State private var newPlaylistName = ""
@@ -102,6 +103,52 @@ private struct LibraryView: View {
                         }
                         .buttonStyle(.bordered)
                         .disabled(model.isRefreshingLibrary)
+                    }
+                }
+
+                Section("Auto-Sync Folder") {
+                    if let folderName = model.syncFolderName {
+                        HStack {
+                            Image(systemName: "folder.badge.questionmark")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(folderName)
+                                    .font(.subheadline.weight(.medium))
+                                if let msg = model.lastSyncMessage {
+                                    Text(msg)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if model.isSyncingFromFolder {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                        }
+
+                        Button("Sync Now") {
+                            model.syncFromWatchedFolderIfConfigured()
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isSyncingFromFolder)
+
+                        Button("Change Folder") {
+                            showSyncFolderPicker = true
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button("Remove Sync Folder", role: .destructive) {
+                            model.clearSyncFolder()
+                        }
+                    } else {
+                        Text("Pick a folder (e.g. OneDrive) and Howl will auto-import new scripts from it each time you open the app.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+
+                        Button("Set Sync Folder") {
+                            showSyncFolderPicker = true
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
                 }
 
@@ -188,6 +235,18 @@ private struct LibraryView: View {
                     switch result {
                     case .success(let urls):
                         model.importFilesToLibrary(from: urls)
+                    case .failure(let error):
+                        if error.localizedDescription.isEmpty == false {
+                            model.lastError = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            .sheet(isPresented: $showSyncFolderPicker) {
+                FolderPickerSheet { result in
+                    switch result {
+                    case .success(let url):
+                        model.setSyncFolder(url: url)
                     case .failure(let error):
                         if error.localizedDescription.isEmpty == false {
                             model.lastError = error.localizedDescription
@@ -331,6 +390,38 @@ private struct ScriptPickerSheet: UIViewControllerRepresentable {
             guard urls.isEmpty == false else { return }
             onComplete(.success(urls))
         }
+    }
+}
+
+private struct FolderPickerSheet: UIViewControllerRepresentable {
+    let onComplete: (Result<URL, Error>) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onComplete: onComplete)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.folder])
+        picker.delegate = context.coordinator
+        picker.allowsMultipleSelection = false
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onComplete: (Result<URL, Error>) -> Void
+
+        init(onComplete: @escaping (Result<URL, Error>) -> Void) {
+            self.onComplete = onComplete
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            guard let url = urls.first else { return }
+            onComplete(.success(url))
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {}
     }
 }
 

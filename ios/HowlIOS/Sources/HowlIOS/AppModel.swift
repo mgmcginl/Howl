@@ -160,6 +160,8 @@ final class AppModel: ObservableObject {
         static let expandedFolderPathsKey = "Howl.LibraryExpandedFolders.Local"
         static let expandedPlaylistIDsKey = "Howl.LibraryExpandedPlaylists.Local"
         static let localFolderName = "Imported Scripts"
+        static let syncFolderBookmarkKey = "Howl.SyncFolderBookmark"
+        static let syncFolderNameKey = "Howl.SyncFolderName"
     }
 
     private enum PlaybackDefaults {
@@ -266,6 +268,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var currentPlaylistID: UUID?
     @Published var statusMessage = "Load a file or use the generator."
     @Published var lastError: String?
+    @Published private(set) var syncFolderName: String?
+    @Published private(set) var isSyncingFromFolder = false
+    @Published private(set) var lastSyncMessage: String?
 
     let bleManager = CoyoteBluetoothManager()
     let audioEngine = AudioOutputEngine()
@@ -277,6 +282,10 @@ final class AppModel: ObservableObject {
     private let outputBatchSize = Coyote3Protocol.pulseBatchSize
     private let maxHistoryPoints = 36
     private var playbackTickIndex = 0
+    private let uiUpdateInterval = 4 // update UI every Nth tick (40Hz / 4 = 10Hz)
+    private var internalPosition: TimeInterval = 0 // high-res position for BLE timing
+    private var isInBackground = false
+    private let backgroundBatchInterval: TimeInterval = 0.1 // 100ms = batch every 4 pulses
     private var libraryRefreshTask: Task<Void, Never>?
     private var activeLibraryRefreshID: UUID?
     private var analysisTasks: [String: Task<Void, Never>] = [:]
@@ -289,7 +298,9 @@ final class AppModel: ObservableObject {
         loadPowerControls()
         syncBleLimits()
         prepareLocalLibrary()
+        loadSyncFolderName()
         refreshLibrary()
+        syncFromWatchedFolderIfConfigured()
     }
 
     var shapeNames: [String] {
@@ -802,6 +813,7 @@ final class AppModel: ObservableObject {
 
         guard !isPlaying else { return }
         isPlaying = true
+        internalPosition = position
         playbackTickIndex = 0
         statusMessage = outputMode == .coyote3Live && !bleManager.isReady
             ? "Playing \(sourceName) while waiting for a ready Coyote 3."
@@ -827,6 +839,7 @@ final class AppModel: ObservableObject {
 
     func seek(to newPosition: TimeInterval) {
         position = newPosition
+        internalPosition = newPosition
         playbackTickIndex = 0
         audioEngine.seek(to: newPosition)
         renderCurrentFrame()
@@ -839,6 +852,8 @@ final class AppModel: ObservableObject {
     func handleScenePhaseChange(_ phase: ScenePhase) {
         switch phase {
         case .active:
+            let wasInBackground = isInBackground
+            isInBackground = false
             endLiveBackgroundTask()
             if outputMode == .audio {
                 syncAudioTransport()
@@ -846,7 +861,14 @@ final class AppModel: ObservableObject {
                 syncBackgroundKeepalive()
             }
             syncLiveHeartbeat()
+            syncFromWatchedFolderIfConfigured()
+            // Switch back to foreground playback loop if we were playing in background
+            if wasInBackground && isPlaying {
+                position = internalPosition
+                restartPlaybackLoop()
+            }
         case .inactive, .background:
+            isInBackground = true
             syncLifecycleBackgroundTask(isEnteringBackground: true)
             if outputMode == .audio {
                 syncAudioTransport()
@@ -854,6 +876,10 @@ final class AppModel: ObservableObject {
                 syncBackgroundKeepalive()
             }
             syncLiveHeartbeat()
+            // Switch to low-power background playback loop
+            if isPlaying {
+                restartPlaybackLoop()
+            }
         @unknown default:
             break
         }
@@ -865,6 +891,7 @@ final class AppModel: ObservableObject {
         sourceName = source.displayName
         duration = source.duration
         position = 0
+        internalPosition = 0
         recentPulses = []
         playbackTickIndex = 0
         statusMessage = "Loaded \(source.displayName)."
@@ -906,6 +933,137 @@ final class AppModel: ObservableObject {
             analysisTasks[relativePath]?.cancel()
             analysisTasks.removeValue(forKey: relativePath)
         }
+    }
+
+    // MARK: - Sync Folder
+
+    func setSyncFolder(url: URL) {
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            UserDefaults.standard.set(bookmarkData, forKey: LibraryDefaults.syncFolderBookmarkKey)
+            let name = url.lastPathComponent
+            UserDefaults.standard.set(name, forKey: LibraryDefaults.syncFolderNameKey)
+            syncFolderName = name
+            lastSyncMessage = "Sync folder set to \(name)."
+            syncFromWatchedFolderIfConfigured()
+        } catch {
+            lastError = error.localizedDescription
+            lastSyncMessage = "Could not bookmark that folder."
+        }
+    }
+
+    func clearSyncFolder() {
+        UserDefaults.standard.removeObject(forKey: LibraryDefaults.syncFolderBookmarkKey)
+        UserDefaults.standard.removeObject(forKey: LibraryDefaults.syncFolderNameKey)
+        syncFolderName = nil
+        lastSyncMessage = nil
+    }
+
+    func syncFromWatchedFolderIfConfigured() {
+        guard let bookmarkData = UserDefaults.standard.data(forKey: LibraryDefaults.syncFolderBookmarkKey) else { return }
+        guard !isSyncingFromFolder else { return }
+
+        isSyncingFromFolder = true
+        lastSyncMessage = "Checking for new files..."
+
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isSyncingFromFolder = false }
+
+            do {
+                var isStale = false
+                let folderURL = try URL(
+                    resolvingBookmarkData: bookmarkData,
+                    options: [],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+
+                if isStale {
+                    // Re-bookmark if stale
+                    let newBookmark = try folderURL.bookmarkData(
+                        options: [],
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
+                    UserDefaults.standard.set(newBookmark, forKey: LibraryDefaults.syncFolderBookmarkKey)
+                }
+
+                let didStartAccess = folderURL.startAccessingSecurityScopedResource()
+                defer {
+                    if didStartAccess {
+                        folderURL.stopAccessingSecurityScopedResource()
+                    }
+                }
+
+                let importResult = try await self.importNewFilesFromSyncFolder(folderURL)
+                if importResult > 0 {
+                    self.refreshLibrary()
+                    self.lastSyncMessage = "Imported \(importResult) new file(s) from \(folderURL.lastPathComponent)."
+                } else {
+                    self.lastSyncMessage = "Up to date."
+                }
+            } catch {
+                self.lastSyncMessage = "Sync failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importNewFilesFromSyncFolder(_ folderURL: URL) async throws -> Int {
+        let existingNames = Set(libraryEntries.map(\.displayName))
+        let libraryRootURL = try Self.localLibraryRootURLStatic()
+
+        let scanTask = Task.detached(priority: .userInitiated) { () -> [URL] in
+            let resourceKeys: Set<URLResourceKey> = [.isRegularFileKey]
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: folderURL,
+                includingPropertiesForKeys: Array(resourceKeys),
+                options: [.skipsHiddenFiles]
+            )
+            return contents.filter { url in
+                let ext = url.pathExtension.lowercased()
+                guard LibraryDefaults.supportedExtensions.contains(ext) else { return false }
+                return true
+            }
+        }
+
+        let remoteFiles = try await scanTask.value
+        let newFiles = remoteFiles.filter { !existingNames.contains($0.lastPathComponent) }
+        guard !newFiles.isEmpty else { return 0 }
+
+        let syncFolderName = folderURL.lastPathComponent
+        let destinationDir = libraryRootURL.appendingPathComponent(syncFolderName, isDirectory: true)
+        try FileManager.default.createDirectory(at: destinationDir, withIntermediateDirectories: true)
+
+        var imported = 0
+        for fileURL in newFiles {
+            let didStart = fileURL.startAccessingSecurityScopedResource()
+            defer {
+                if didStart { fileURL.stopAccessingSecurityScopedResource() }
+            }
+
+            do {
+                let data = try Data(contentsOf: fileURL)
+                let destURL = Self.uniqueDestinationURL(
+                    directory: destinationDir,
+                    preferredName: fileURL.lastPathComponent
+                )
+                try data.write(to: destURL, options: [.atomic])
+                imported += 1
+            } catch {
+                continue
+            }
+        }
+
+        return imported
+    }
+
+    private func loadSyncFolderName() {
+        syncFolderName = UserDefaults.standard.string(forKey: LibraryDefaults.syncFolderNameKey)
     }
 
     private func prepareLocalLibrary() {
@@ -1598,12 +1756,79 @@ final class AppModel: ObservableObject {
 
     private func startPlaybackLoop() {
         playbackTask?.cancel()
+        if isInBackground {
+            startBackgroundPlaybackLoop()
+        } else {
+            startForegroundPlaybackLoop()
+        }
+    }
+
+    private func restartPlaybackLoop() {
+        guard isPlaying else { return }
+        startPlaybackLoop()
+    }
+
+    private func startForegroundPlaybackLoop() {
         playbackTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 self.tick()
                 try? await Task.sleep(for: .seconds(self.pulseInterval))
             }
+        }
+    }
+
+    private func startBackgroundPlaybackLoop() {
+        playbackTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                self.backgroundTick()
+                try? await Task.sleep(for: .seconds(self.backgroundBatchInterval))
+            }
+        }
+    }
+
+    private func backgroundTick() {
+        guard let source = loadedSource else {
+            stop()
+            return
+        }
+
+        // Advance position by a full batch worth of time
+        let batchDuration = pulseInterval * Double(outputBatchSize)
+
+        // Build and transmit the BLE batch
+        switch outputMode {
+        case .coyote3Live:
+            guard let pulses = buildCoyoteBatch(source: source, at: internalPosition) else { return }
+            do {
+                let packet = try Coyote3Protocol.pulsePacket(
+                    pulses: pulses,
+                    powerA: powerA,
+                    powerB: powerB,
+                    minFrequency: minFrequency,
+                    maxFrequency: maxFrequency,
+                    previousPowerA: bleManager.devicePowerA,
+                    previousPowerB: bleManager.devicePowerB
+                )
+                bleManager.sendLivePacket(packet)
+            } catch {
+                // Silently continue in background
+            }
+        default:
+            break
+        }
+
+        // Advance internal position
+        let nextPosition = internalPosition + batchDuration
+        if let duration = source.duration, nextPosition > duration {
+            if source.shouldLoop {
+                internalPosition = 0
+            } else {
+                stop()
+            }
+        } else {
+            internalPosition = nextPosition
         }
     }
 
@@ -1626,23 +1851,32 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let pulse = source.pulse(at: position)
-        currentPulse = pulse
-        appendToHistory(pulse)
-        applyOutput(for: pulse, source: source, at: position, transmit: true)
-        syncLiveHeartbeat()
+        let isUITick = playbackTickIndex.isMultiple(of: uiUpdateInterval)
 
-        let nextPosition = position + pulseInterval
+        // Always apply output at full rate (BLE batching decides when to transmit)
+        applyOutput(for: .silence, source: source, at: internalPosition, transmit: true)
+
+        // Only update @Published UI state at ~10Hz to reduce SwiftUI re-renders
+        if isUITick {
+            let pulse = source.pulse(at: internalPosition)
+            currentPulse = pulse
+            appendToHistory(pulse)
+            position = internalPosition
+            syncLiveHeartbeat()
+        }
+
+        let nextPosition = internalPosition + pulseInterval
         playbackTickIndex += 1
         if let duration = source.duration, nextPosition > duration {
             if source.shouldLoop {
+                internalPosition = 0
                 position = 0
                 playbackTickIndex = 0
             } else {
                 stop()
             }
         } else {
-            position = nextPosition
+            internalPosition = nextPosition
         }
     }
 
@@ -1739,8 +1973,13 @@ final class AppModel: ObservableObject {
     private func applyOutput(for _: Pulse, source: any PulseSource, at time: TimeInterval, transmit: Bool) {
         switch outputMode {
         case .preview, .audio:
-            bleManager.clearStagedPacket()
+            return
         case .coyote3PacketPreview, .coyote3Live:
+            // During playback, only compute on batch boundaries
+            if transmit {
+                guard playbackTickIndex.isMultiple(of: outputBatchSize) else { return }
+            }
+
             guard let pulses = buildCoyoteBatch(source: source, at: time) else { return }
             let packet: Data
             do {
@@ -1760,8 +1999,6 @@ final class AppModel: ObservableObject {
             bleManager.stage(packet)
 
             guard transmit else { return }
-            guard playbackTickIndex.isMultiple(of: outputBatchSize) else { return }
-
             if outputMode == .coyote3Live {
                 bleManager.sendLivePacket(packet)
             }
