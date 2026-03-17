@@ -2029,16 +2029,12 @@ final class AppModel: ObservableObject {
 
     private func syncAudioTransport() {
         guard outputMode == .audio else {
-            if shouldKeepLiveBackgroundAlive == false {
-                audioEngine.stop()
-            }
+            audioEngine.stop()
             return
         }
 
         guard let source = loadedSource, isPlaying else {
-            if shouldKeepLiveBackgroundAlive == false {
-                audioEngine.stop()
-            }
+            audioEngine.stop()
             return
         }
 
@@ -2060,17 +2056,12 @@ final class AppModel: ObservableObject {
     }
 
     private var shouldRequestLifecycleBackgroundTask: Bool {
-        isPlaying && loadedSource != nil && (outputMode == .audio || shouldKeepLiveBackgroundAlive)
+        isPlaying && loadedSource != nil
     }
 
     private func syncBackgroundKeepalive() {
-        guard outputMode != .audio else { return }
-
-        if shouldKeepLiveBackgroundAlive {
-            audioEngine.startKeepalive()
-        } else {
-            audioEngine.stop()
-        }
+        // No-op: background survival now relies on bluetooth-central mode
+        // and the lightweight background playback loop, not audio keepalive.
     }
 
     private func syncLiveHeartbeat() {
