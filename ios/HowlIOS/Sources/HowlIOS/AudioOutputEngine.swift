@@ -10,10 +10,20 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         case keepalive
     }
 
+    enum AudioFormat: String, CaseIterable, Identifiable {
+        case stereo = "Stereo"
+        case triphase = "Triphase"
+
+        var id: String { rawValue }
+    }
+
     @Published private(set) var statusSummary = "Idle"
     @Published private(set) var routeSummary = "Unknown"
     @Published private(set) var lastError: String?
     @Published private(set) var keepaliveSummary = "Not running"
+    @Published var audioFormat: AudioFormat = .stereo {
+        didSet { syncAudioFormatToState() }
+    }
 
     private struct PlaybackState {
         var source: (any PulseSource)?
@@ -25,6 +35,8 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         var gainB: Double = 0.1
         var phaseA: Double = 0
         var phaseB: Double = 0
+        var phaseTri: Double = 0
+        var audioFormat: AudioFormat = .stereo
         var isActive = false
         var mode: Mode = .idle
     }
@@ -368,14 +380,38 @@ final class AudioOutputEngine: NSObject, ObservableObject {
             let amplitudeA = Double(pulse.ampA) * state.gainA
             let amplitudeB = Double(pulse.ampB) * state.gainB
 
-            state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
-            state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
+            switch state.audioFormat {
+            case .stereo:
+                state.phaseA += twoPi * max(frequencyA, 1) / sampleRate
+                state.phaseB += twoPi * max(frequencyB, 1) / sampleRate
 
-            if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
-            if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
+                if state.phaseA >= twoPi { state.phaseA.formTruncatingRemainder(dividingBy: twoPi) }
+                if state.phaseB >= twoPi { state.phaseB.formTruncatingRemainder(dividingBy: twoPi) }
 
-            leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
-            rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
+                leftBuffer[frame] = Float(sin(state.phaseA) * amplitudeA)
+                rightBuffer[frame] = Float(sin(state.phaseB) * amplitudeB)
+
+            case .triphase:
+                // Balanced 3-phase encoding. L = sin(p), R = sin(p + 2π/3). When the
+                // cable wires its third electrode to the audio return path, the
+                // current it carries is -(L + R) = sin(p + 4π/3), giving three
+                // electrode currents 120° apart that sum to zero (KCL). Tradeoff:
+                // triphase is a unified 3-electrode topology, so A and B no longer
+                // drive independent body parts — they blend into amplitude/frequency
+                // of the shared signal. Cables that derive the third leg via an
+                // L−R differential transformer will need different encoding.
+                let frequency = (frequencyA + frequencyB) * 0.5
+                let amplitude = max(amplitudeA, amplitudeB)
+
+                state.phaseTri += twoPi * max(frequency, 1) / sampleRate
+                if state.phaseTri >= twoPi { state.phaseTri.formTruncatingRemainder(dividingBy: twoPi) }
+
+                let phaseL = state.phaseTri
+                let phaseR = state.phaseTri + (twoPi / 3.0)
+
+                leftBuffer[frame] = Float(sin(phaseL) * amplitude)
+                rightBuffer[frame] = Float(sin(phaseR) * amplitude)
+            }
             state.sampleCursor += 1
         }
 
@@ -404,13 +440,21 @@ final class AudioOutputEngine: NSObject, ObservableObject {
         playbackState.gainB = Self.channelGain(for: powerB)
         playbackState.isActive = isActive
         playbackState.mode = mode
+        playbackState.audioFormat = audioFormat
 
         if resetPlaybackCursor {
             playbackState.position = position
             playbackState.sampleCursor = 0
             playbackState.phaseA = 0
             playbackState.phaseB = 0
+            playbackState.phaseTri = 0
         }
+        stateLock.unlock()
+    }
+
+    private func syncAudioFormatToState() {
+        stateLock.lock()
+        playbackState.audioFormat = audioFormat
         stateLock.unlock()
     }
 

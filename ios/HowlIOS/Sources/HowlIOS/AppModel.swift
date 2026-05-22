@@ -169,6 +169,7 @@ final class AppModel: ObservableObject {
         static let defaultPowerSliderCeiling = 50
         static let minimumPowerSliderCeiling = 10
         static let maximumPowerSliderCeiling = 200
+        static let audioFormatKey = "Howl.AudioFormat"
     }
 
     @Published var sourceName = "No source loaded"
@@ -209,6 +210,13 @@ final class AppModel: ObservableObject {
             }
             clampPowerValuesToCeiling()
             persistPowerControls()
+        }
+    }
+    @Published var audioFormat: AudioOutputEngine.AudioFormat = .stereo {
+        didSet {
+            guard audioFormat != oldValue else { return }
+            audioEngine.audioFormat = audioFormat
+            UserDefaults.standard.set(audioFormat.rawValue, forKey: PlaybackDefaults.audioFormatKey)
         }
     }
     @Published var minFrequency = 10.0 {
@@ -1556,6 +1564,13 @@ final class AppModel: ObservableObject {
         let stored = UserDefaults.standard.object(forKey: PlaybackDefaults.powerSliderCeilingKey) as? Int
         powerSliderCeiling = stored ?? PlaybackDefaults.defaultPowerSliderCeiling
         clampPowerValuesToCeiling()
+
+        if let rawFormat = UserDefaults.standard.string(forKey: PlaybackDefaults.audioFormatKey),
+           let restored = AudioOutputEngine.AudioFormat(rawValue: rawFormat) {
+            audioFormat = restored
+        } else {
+            audioEngine.audioFormat = audioFormat
+        }
     }
 
     private func persistFavoritesForCurrentLibrary() {

@@ -1148,6 +1148,16 @@ private struct SettingsView: View {
                 }
 
                 Section("Audio") {
+                    Picker("Format", selection: $model.audioFormat) {
+                        ForEach(AudioOutputEngine.AudioFormat.allCases) { format in
+                            Text(format.rawValue).tag(format)
+                        }
+                    }
+                    if model.audioFormat == .triphase {
+                        Text("Triphase encodes a single signal across L and R with a 120° offset for use with triphase splitter cables. Channels A and B blend into the shared waveform — independent body-part targeting is lost.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     LabeledContent("Status", value: audioEngine.statusSummary)
                     LabeledContent("Keepalive", value: audioEngine.keepaliveSummary)
                     LabeledContent("Route", value: audioEngine.routeSummary)
