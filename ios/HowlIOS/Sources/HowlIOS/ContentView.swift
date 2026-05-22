@@ -719,6 +719,18 @@ private struct PlayerView: View {
                             Text("Route: \(audioEngine.routeSummary)")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
+                            Button {
+                                model.audioFormat = (model.audioFormat == .stereo) ? .triphase : .stereo
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: model.audioFormat == .triphase ? "circle.grid.3x3.fill" : "waveform")
+                                    Text(model.audioFormat.rawValue)
+                                }
+                                .font(.caption.weight(.semibold))
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .accessibilityHint("Toggle between stereo and triphase audio output")
                         }
                     }
 
